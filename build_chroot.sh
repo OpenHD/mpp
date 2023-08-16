@@ -17,6 +17,7 @@ cd ../
 mkdir aarch64-linux-gnu
 cd lib
 mv * ../aarch64-linux-gnu/
+cd ../../../
 fpm -a arm64 -s dir -t deb -n mpp -v 0.99 -C mpp-package -p mpp_VERSION_ARCH.deb
 echo "copied deb file"
 echo "push to cloudsmith"
