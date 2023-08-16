@@ -14,11 +14,12 @@ make DESTDIR=mpp-package -j4 install
 cd mpp-package/usr/local
 mv lib ../
 cd ../
-mkdir aarch64-linux-gnu
+mkdir -p aarch64-linux-gnu
 cd lib
 mv * ../aarch64-linux-gnu/
+mv ../aarch64-linux-gnu ../lib/aarch64-linux-gnu
 cd ../../../
-fpm -a arm64 -s dir -t deb -n mpp -v 0.99 -C mpp-package -p mpp_VERSION_ARCH.deb
+fpm -a arm64 -s dir -t deb -n mpp -v 1.0 -C mpp-package -p mpp_VERSION_ARCH.deb
 echo "copied deb file"
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
