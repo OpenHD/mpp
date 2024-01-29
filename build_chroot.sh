@@ -5,7 +5,7 @@
 sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
 ls -a
-sudo apt install -y git ruby-dev make cmake gcc g++ wget
+sudo apt install -y git ruby-dev make cmake gcc g++ wget libdrm-dev
 gem install fpm
 cd build/linux/aarch64
 ./make-Makefiles.bash
