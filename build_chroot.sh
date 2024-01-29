@@ -11,6 +11,7 @@ cd build/linux/aarch64
 ./make-Makefiles.bash
 make -j$(nproc)
 make DESTDIR=mpp-package -j4 install
+echo "Current directory: $(pwd)"
 cd mpp-package/usr/local
 mv lib ../
 cd ../
