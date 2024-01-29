@@ -33,6 +33,7 @@
 #include "mpi_enc_utils.h"
 #include "camera_source.h"
 #include "mpp_enc_roi_utils.h"
+#include "mpp_rc_api.h"
 
 typedef struct {
     // base flow context
@@ -116,6 +117,7 @@ typedef struct {
     RK_S32 gop_mode;
     RK_S32 gop_len;
     RK_S32 vi_len;
+    RK_S32 scene_mode;
 
     RK_S64 first_frm;
     RK_S64 first_pkt;
@@ -175,6 +177,7 @@ MPP_RET test_ctx_init(MpiEncMultiCtxInfo *info)
     p->fps_out_flex = cmd->fps_out_flex;
     p->fps_out_den  = cmd->fps_out_den;
     p->fps_out_num  = cmd->fps_out_num;
+    p->scene_mode   = cmd->scene_mode;
     p->mdinfo_size  = (MPP_VIDEO_CodingHEVC == cmd->type) ?
                       (MPP_ALIGN(p->hor_stride, 32) >> 5) *
                       (MPP_ALIGN(p->ver_stride, 32) >> 5) * 16 :
@@ -226,6 +229,7 @@ MPP_RET test_ctx_init(MpiEncMultiCtxInfo *info)
     case MPP_FMT_YUV422SP : {
         p->frame_size = MPP_ALIGN(p->hor_stride, 64) * MPP_ALIGN(p->ver_stride, 64) * 2;
     } break;
+    case MPP_FMT_YUV400:
     case MPP_FMT_RGB444 :
     case MPP_FMT_BGR444 :
     case MPP_FMT_RGB555 :
@@ -311,6 +315,8 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
     if (!p->bps)
         p->bps = p->width * p->height / 8 * (p->fps_out_num / p->fps_out_den);
 
+    mpp_enc_cfg_set_s32(cfg, "tune:scene_mode", p->scene_mode);
+
     mpp_enc_cfg_set_s32(cfg, "prep:width", p->width);
     mpp_enc_cfg_set_s32(cfg, "prep:height", p->height);
     mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", p->hor_stride);
@@ -370,6 +376,10 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
             mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", fix_qp);
             mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", fix_qp);
             mpp_enc_cfg_set_s32(cfg, "rc:qp_ip", 0);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_i", fix_qp);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_i", fix_qp);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_p", fix_qp);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_p", fix_qp);
         } break;
         case MPP_ENC_RC_MODE_CBR :
         case MPP_ENC_RC_MODE_VBR :
@@ -380,6 +390,10 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
             mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", cmd->qp_max_i ? cmd->qp_max_i : 51);
             mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", cmd->qp_min_i ? cmd->qp_min_i : 10);
             mpp_enc_cfg_set_s32(cfg, "rc:qp_ip", 2);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_i", cmd->fqp_min_i ? cmd->fqp_min_i : 10);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_i", cmd->fqp_max_i ? cmd->fqp_max_i : 51);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_p", cmd->fqp_min_p ? cmd->fqp_min_p : 10);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_p", cmd->fqp_max_p ? cmd->fqp_max_p : 51);
         } break;
         default : {
             mpp_err_f("unsupport encoder rc mode %d\n", p->rc_mode);
@@ -583,6 +597,7 @@ MPP_RET test_mpp_run(MpiEncMultiCtxInfo *info)
         RK_U32 eoi = 1;
 
         if (p->fp_input) {
+            mpp_buffer_sync_begin(p->frm_buf);
             ret = read_image(buf, p->fp_input, p->width, p->height,
                              p->hor_stride, p->ver_stride, p->fmt);
             if (ret == MPP_NOK || feof(p->fp_input)) {
@@ -598,12 +613,15 @@ MPP_RET test_mpp_run(MpiEncMultiCtxInfo *info)
                 mpp_log_q(quiet, "chn %d found last frame. feof %d\n", chn, feof(p->fp_input));
             } else if (ret == MPP_ERR_VALUE)
                 goto RET;
+            mpp_buffer_sync_end(p->frm_buf);
         } else {
             if (p->cam_ctx == NULL) {
+                mpp_buffer_sync_begin(p->frm_buf);
                 ret = fill_image(buf, p->width, p->height, p->hor_stride,
                                  p->ver_stride, p->fmt, p->frame_count);
                 if (ret)
                     goto RET;
+                mpp_buffer_sync_end(p->frm_buf);
             } else {
                 cam_frm_idx = camera_source_get_frame(p->cam_ctx);
                 mpp_assert(cam_frm_idx >= 0);
@@ -864,7 +882,7 @@ void *enc_test(void *arg)
         goto MPP_TEST_OUT;
     }
 
-    ret = mpp_buffer_group_get_internal(&p->buf_grp, MPP_BUFFER_TYPE_DRM);
+    ret = mpp_buffer_group_get_internal(&p->buf_grp, MPP_BUFFER_TYPE_DRM | MPP_BUFFER_FLAGS_CACHABLE);
     if (ret) {
         mpp_err_f("failed to get mpp buffer group ret %d\n", ret);
         goto MPP_TEST_OUT;

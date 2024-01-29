@@ -17,6 +17,7 @@
 #define MODULE_TAG "h265e_api"
 
 #include <string.h>
+#include <limits.h>
 
 #include "mpp_env.h"
 #include "mpp_mem.h"
@@ -110,6 +111,7 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
     h265->merge_cfg.max_mrg_cnd = 2;
     h265->merge_cfg.merge_left_flag = 1;
     h265->merge_cfg.merge_up_flag = 1;
+    p->cfg->tune.scene_mode = MPP_ENC_SCENE_MODE_DEFAULT;
 
     /*
      * default prep:
@@ -163,6 +165,10 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
     rc_cfg->qp_min_i = 15;
     rc_cfg->qp_delta_ip = 4;
     rc_cfg->qp_delta_vi = 2;
+    rc_cfg->fqp_min_i = INT_MAX;
+    rc_cfg->fqp_min_p = INT_MAX;
+    rc_cfg->fqp_max_i = INT_MAX;
+    rc_cfg->fqp_max_p = INT_MAX;
 
     INIT_LIST_HEAD(&p->rc_list);
 
@@ -205,6 +211,13 @@ static MPP_RET h265e_gen_hdr(void *ctx, MppPacket pkt)
 
     if (NULL == p->dpb)
         h265e_dpb_init(&p->dpb);
+
+    /*
+     * After gen_hdr, the change of codec/prep must be cleared to 0,
+     * otherwise the change will affect the next idr frame
+     */
+    p->cfg->codec.h265.change = 0;
+    p->cfg->prep.change = 0;
 
     h265e_dbg_func("leave ctx %p\n", ctx);
 
@@ -256,7 +269,6 @@ static MPP_RET h265e_proc_dpb(void *ctx, HalEncTask *task)
 static MPP_RET h265e_proc_hal(void *ctx, HalEncTask *task)
 {
     H265eCtx *p = (H265eCtx *)ctx;
-    H265eSyntax_new *syntax = NULL;
     EncFrmStatus *frm = &task->rc_task->frm;
     MppPacket packet = task->packet;
     MppMeta meta = mpp_packet_get_meta(packet);
@@ -268,10 +280,13 @@ static MPP_RET h265e_proc_hal(void *ctx, HalEncTask *task)
 
     mpp_meta_set_s32(meta, KEY_TEMPORAL_ID, frm->temporal_id);
     h265e_dbg_func("enter ctx %p \n", ctx);
-    syntax = &p->syntax;
+
     h265e_syntax_fill(ctx);
+
     task->valid = 1;
-    task->syntax.data = syntax;
+    task->syntax.number = 1;
+    task->syntax.data = &p->syntax;
+
     h265e_dbg_func("leave ctx %p \n", ctx);
     return MPP_OK;
 }
@@ -291,7 +306,7 @@ static MPP_RET h265e_proc_enc_skip(void *ctx, HalEncTask *task)
     new_length = h265e_code_slice_skip_frame(ctx, p->slice, ptr, len);
     task->length = new_length;
     task->rc_task->info.bit_real = 8 * new_length;
-    ///mpp_packet_set_length(pkt, offset + new_length);
+    mpp_packet_add_segment_info(pkt, NAL_TRAIL_R, offset, new_length);
 
     h265e_dbg_func("leave\n");
     return MPP_OK;
@@ -452,7 +467,16 @@ static MPP_RET h265e_proc_h265_cfg(MppEncH265Cfg *dst, MppEncH265Cfg *src)
 
     // TODO: do codec check first
     if (change & MPP_ENC_H265_CFG_PROFILE_LEVEL_TILER_CHANGE) {
-        dst->profile = src->profile;
+        RK_S32 profile = src->profile;
+
+        if (MPP_PROFILE_HEVC_MAIN == profile ||
+            MPP_PROFILE_HEVC_MAIN_STILL_PICTURE == profile) {
+            dst->profile = profile;
+            // TODO: proc main still profile
+        } else {
+            mpp_err("invalid profile_idc %d, keep %d", profile, dst->profile);
+        }
+
         dst->level = src->level;
     }
 

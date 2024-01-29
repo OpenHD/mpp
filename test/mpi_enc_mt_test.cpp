@@ -232,6 +232,7 @@ MPP_RET mt_test_ctx_init(MpiEncMtCtxInfo *info)
     case MPP_FMT_YUV422SP : {
         p->frame_size = MPP_ALIGN(p->hor_stride, 64) * MPP_ALIGN(p->ver_stride, 64) * 2;
     } break;
+    case MPP_FMT_YUV400 :
     case MPP_FMT_RGB444 :
     case MPP_FMT_BGR444 :
     case MPP_FMT_RGB555 :
@@ -716,6 +717,7 @@ void *enc_test_input(void *arg)
                 break;
         } else {
             if (p->cam_ctx == NULL) {
+                ret = MPP_OK;
                 ret = fill_image((RK_U8 *)buf, p->width, p->height, p->hor_stride,
                                  p->ver_stride, p->fmt, p->frm_cnt_in);
                 if (ret)
@@ -1058,6 +1060,7 @@ int enc_test_mt(MpiEncTestArgs* cmd, const char *name)
         mpp_log("*******************************************\n");
 
         getc(stdin);
+        mpp_log_f("loop_end start");
         for (i = 0; i < cmd->nthreads; i++)
             ctxs[i].ctx.loop_end = 1;
     }

@@ -125,10 +125,20 @@ CamSource *camera_source_init(const char *device, RK_U32 bufcnt, RK_U32 width, R
         return NULL;
 
     ctx->bufcnt = bufcnt;
-    ctx->fd = open(device, O_RDWR, 0);
+    ctx->fd = open(device, O_RDWR | O_CLOEXEC, 0);
     if (ctx->fd < 0) {
         mpp_err_f("Cannot open device\n");
         goto FAIL;
+    }
+
+    {
+        struct v4l2_input input;
+
+        input.index = 0;
+        while (!camera_source_ioctl(ctx->fd, VIDIOC_ENUMINPUT, &input)) {
+            mpp_log("input devices:%s\n", input.name);
+            ++input.index;
+        }
     }
 
     // Determine if fd is a V4L2 Device
@@ -156,6 +166,20 @@ CamSource *camera_source_init(const char *device, RK_U32 bufcnt, RK_U32 width, R
 
     vfmt.fmt.pix.width = width;
     vfmt.fmt.pix.height = height;
+
+    {
+        struct v4l2_fmtdesc fmtdesc;
+
+        fmtdesc.index = 0;
+        fmtdesc.type = vfmt.type;
+        while (!camera_source_ioctl(ctx->fd, VIDIOC_ENUM_FMT, &fmtdesc)) {
+            mpp_log("fmt name: [%s]\n", fmtdesc.description);
+            mpp_log("fmt pixelformat: '%c%c%c%c', description = '%s'\n", fmtdesc.pixelformat & 0xFF,
+                    (fmtdesc.pixelformat >> 8) & 0xFF, (fmtdesc.pixelformat >> 16) & 0xFF,
+                    (fmtdesc.pixelformat >> 24) & 0xFF, fmtdesc.description);
+            fmtdesc.index++;
+        }
+    }
 
     if (MPP_FRAME_FMT_IS_YUV(format)) {
         vfmt.fmt.pix.pixelformat = V4L2_yuv_cfg[format - MPP_FRAME_FMT_YUV];
@@ -276,7 +300,6 @@ CamSource *camera_source_init(const char *device, RK_U32 bufcnt, RK_U32 width, R
 
         if (-1 == camera_source_ioctl(ctx->fd, VIDIOC_QBUF, &buf)) {
             mpp_err_f("ERROR: VIDIOC_QBUF %d\n", i);
-            camera_source_deinit(ctx);
             goto FAIL;
         }
     }
@@ -284,7 +307,6 @@ CamSource *camera_source_init(const char *device, RK_U32 bufcnt, RK_U32 width, R
     // Start capturing
     if (-1 == camera_source_ioctl(ctx->fd, VIDIOC_STREAMON, &type)) {
         mpp_err_f("ERROR: VIDIOC_STREAMON\n");
-        camera_source_deinit(ctx);
         goto FAIL;
     }
 
@@ -406,8 +428,14 @@ MPP_RET camera_source_put_frame(CamSource *ctx, RK_S32 idx)
 
 MppBuffer camera_frame_to_buf(CamSource *ctx, RK_S32 idx)
 {
-    if (idx < 0)
-        return NULL;
+    MppBuffer buf = NULL;
 
-    return ctx->fbuf[idx].buffer;
+    if (idx < 0)
+        return buf;
+
+    buf = ctx->fbuf[idx].buffer;
+    if (buf)
+        mpp_buffer_sync_end(buf);
+
+    return buf;
 }

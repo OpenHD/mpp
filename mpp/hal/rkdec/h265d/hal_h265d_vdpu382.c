@@ -180,6 +180,11 @@ static MPP_RET hal_h265d_vdpu382_init(void *hal, MppHalCfg *cfg)
         reg_ctx->hw_info = hw_info;
     }
 
+    if (cfg->hal_fbc_adj_cfg) {
+        cfg->hal_fbc_adj_cfg->func = vdpu382_afbc_align_calc;
+        cfg->hal_fbc_adj_cfg->expand = 16;
+    }
+
 #ifdef dump
     fp = fopen("/data/hal.bin", "wb");
 #endif
@@ -942,6 +947,7 @@ static MPP_RET hal_h265d_vdpu382_gen_regs(void *hal,  HalTaskInfo *syn)
         }
     }
     vdpu382_setup_statistic(&hw_regs->common, &hw_regs->statistic);
+    mpp_buffer_sync_end(reg_ctx->bufs);
 
     return ret;
 }

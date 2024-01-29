@@ -200,6 +200,9 @@ static MPP_RET hal_h264e_vepu541_init(void *hal, MppEncHalCfg *cfg)
 
         hw->qp_delta_row_i  = 0;
         hw->qp_delta_row    = 2;
+        hw->qbias_i         = 683;
+        hw->qbias_p         = 341;
+        hw->qbias_en        = 0;
 
         memcpy(hw->aq_thrd_i, h264_aq_tthd_default, sizeof(hw->aq_thrd_i));
         memcpy(hw->aq_thrd_p, h264_aq_tthd_default, sizeof(hw->aq_thrd_p));
@@ -470,7 +473,7 @@ static MPP_RET setup_vepu541_prep(Vepu541H264eRegSet *regs, MppEncPrepCfg *prep,
     regs->reg017.alpha_swap = cfg.alpha_swap;
     regs->reg017.rbuv_swap  = cfg.rbuv_swap;
     regs->reg017.src_range  = cfg.src_range;
-    regs->reg017.out_fmt_cfg = 0;
+    regs->reg017.out_fmt_cfg = (fmt == MPP_FMT_YUV400) ? 1 : 0;
 
     if (MPP_FRAME_FMT_IS_FBC(fmt)) {
         y_stride = mpp_frame_get_fbc_hdr_stride(task->frame);
@@ -945,6 +948,7 @@ static void setup_vepu541_io_buf(Vepu541H264eRegSet *regs, MppDev dev,
             off_in[0] = hor_stride * ver_stride;
             off_in[1] = hor_stride * ver_stride * 5 / 4;
         } break;
+        case VEPU540_FMT_YUV400 :
         case VEPU541_FMT_YUYV422 :
         case VEPU541_FMT_UYVY422 : {
             off_in[0] = 0;
@@ -1064,6 +1068,8 @@ static MPP_RET setup_vepu541_intra_refresh(Vepu541H264eRegSet *regs, HalH264eVep
     regs->reg073.roi_addr = fd;
     vepu541_set_one_roi(buf, region, w, h);
     mpp_free(region);
+    mpp_buffer_sync_end(ctx->roi_buf);
+
 RET:
     hal_h264e_dbg_func("leave, ret %d\n", ret);
     return ret;
@@ -1118,6 +1124,7 @@ static void setup_vepu541_roi(Vepu541H264eRegSet *regs, HalH264eVepu541Ctx *ctx)
             regs->reg073.roi_addr = fd;
 
             vepu541_set_roi(buf, roi, w, h);
+            mpp_buffer_sync_end(ctx->roi_buf);
         } else {
             regs->reg013.roi_enc = 0;
             regs->reg073.roi_addr = 0;
@@ -1507,6 +1514,10 @@ static void setup_vepu541_l2(Vepu541H264eRegL2Set *regs, H264eSlice *slice, MppE
 
     /* 000556ab */
     regs->qnt_bias_comb.qnt_bias_p = 171;
+    if (hw->qbias_en) {
+        regs->qnt_bias_comb.qnt_bias_i = hw->qbias_i;
+        regs->qnt_bias_comb.qnt_bias_p = hw->qbias_p;
+    }
 
     regs->atr_thd0_h264.atr_thd0 = 1;
     regs->atr_thd0_h264.atr_thd1 = 4;
@@ -1819,6 +1830,14 @@ static MPP_RET hal_h264e_vepu541_ret_task(void *hal, HalEncTask *task)
     rc_info->iblk4_prop = (ctx->regs_ret.st_lvl4_intra_num +
                            ctx->regs_ret.st_lvl8_intra_num +
                            ctx->regs_ret.st_lvl16_intra_num) * 256 / mbs;
+
+    rc_info->sse = ((RK_S64)(ctx->regs_ret.st_sse_qp.sse_h8 & 0xff) << 32) +
+                   ctx->regs_ret.st_sse_l32.sse_l32;
+    rc_info->lvl16_inter_num = ctx->regs_ret.st_lvl16_inter_num;
+    rc_info->lvl8_inter_num  = ctx->regs_ret.st_lvl8_inter_num;
+    rc_info->lvl16_intra_num = ctx->regs_ret.st_lvl16_intra_num;
+    rc_info->lvl8_intra_num  = ctx->regs_ret.st_lvl8_intra_num;
+    rc_info->lvl4_intra_num  = ctx->regs_ret.st_lvl4_intra_num;
 
     ctx->hal_rc_cfg.bit_real = rc_info->bit_real;
     ctx->hal_rc_cfg.quality_real = rc_info->quality_real;

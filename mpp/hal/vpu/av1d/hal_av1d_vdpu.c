@@ -116,7 +116,7 @@ static RK_U32 rkv_ver_align(RK_U32 val)
 
 static RK_U32 rkv_hor_align(RK_U32 val)
 {
-    return MPP_ALIGN(val, 8);
+    return MPP_ALIGN(val, 16);
 }
 
 static RK_U32 rkv_len_align(RK_U32 val)
@@ -770,6 +770,7 @@ void vdpu_av1d_set_prob(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
         // Overwrite MV context area with intrabc MV context
         memcpy(prob_base + mv_cdf_offset, dxva->cdfs_ndvc, sizeof(MvCDFs));
     }
+    mpp_buffer_sync_end(reg_ctx->prob_tbl_base);
 
     regs->addr_cfg.swreg171.sw_prob_tab_out_base_lsb    = mpp_buffer_get_fd(reg_ctx->prob_tbl_out_base);
     regs->addr_cfg.swreg173.sw_prob_tab_base_lsb        = mpp_buffer_get_fd(reg_ctx->prob_tbl_base);
@@ -1462,6 +1463,7 @@ void vdpu_av1d_set_global_model(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
                  dxva->frame_refs[ref_frame].gamma,
                  dxva->frame_refs[ref_frame].delta);
     }
+    mpp_buffer_sync_end(ctx->global_model);
 
     regs->addr_cfg.swreg82.sw_global_model_base_msb = 0;
     regs->addr_cfg.swreg83.sw_global_model_base_lsb = mpp_buffer_get_fd(ctx->global_model);
@@ -1584,6 +1586,7 @@ void vdpu_av1d_set_tile_info_mem(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
                      tile0, tile1, start, end, x0, x1, y0, y1);
         }
     }
+    mpp_buffer_sync_end(ctx->tile_info);
 }
 
 void vdpu_av1d_set_cdef(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
@@ -1786,11 +1789,47 @@ void vdpu_av1d_set_fgs(VdpuAv1dRegCtx *ctx, DXVA_PicParams_AV1 *dxva)
     }
 
     memcpy(ptr, &ctx->fgsmem, sizeof(FilmGrainMemory));
+    mpp_buffer_sync_end(ctx->film_grain_mem);
 
     regs->addr_cfg.swreg94.sw_filmgrain_base_msb = 0;
     regs->addr_cfg.swreg95.sw_filmgrain_base_lsb = mpp_buffer_get_fd(ctx->film_grain_mem);
 
     if (regs->swreg7.sw_apply_grain) AV1D_DBG(AV1D_DBG_LOG, "NOTICE: filmgrain enabled.\n");
+}
+
+static MPP_RET vdpu_av1d_setup_tile_bufs(void *hal, DXVA_PicParams_AV1 *dxva)
+{
+    Av1dHalCtx *p_hal = (Av1dHalCtx *)hal;
+    VdpuAv1dRegCtx *ctx = (VdpuAv1dRegCtx *)p_hal->reg_ctx;
+    RK_U32 out_w = MPP_ALIGN(dxva->max_width * dxva->bitdepth, 16 * 8) / 8;
+    RK_U32 num_sbs = (MPP_ALIGN(dxva->max_width, 64) / 64 + 1) * (MPP_ALIGN(dxva->max_height, 64) / 64  + 1);
+    RK_U32 dir_mvs_size = MPP_ALIGN(num_sbs * 24 * 128 / 8, 16) * 2;
+    RK_U32 out_h = MPP_ALIGN(dxva->max_height, 16);
+    RK_U32 luma_size = out_w * out_h;
+    RK_U32 chroma_size = luma_size >> 1;
+    RK_U32 tile_out_size = luma_size + chroma_size + dir_mvs_size + 512;
+
+    if (tile_out_size <= ctx->tile_out_size)
+        return MPP_OK;
+
+    ctx->hor_stride = out_w;
+    ctx->luma_size = luma_size;
+    ctx->chroma_size = chroma_size;
+    ctx->tile_out_size = tile_out_size;
+
+    if (ctx->tile_out_bufs) {
+        hal_bufs_deinit(ctx->tile_out_bufs);
+        ctx->tile_out_bufs = NULL;
+    }
+    hal_bufs_init(&ctx->tile_out_bufs);
+    if (!ctx->tile_out_bufs) {
+        mpp_err_f("tile out bufs init fail\n");
+        return MPP_ERR_NOMEM;
+    }
+    ctx->tile_out_count = mpp_buf_slot_get_count(p_hal->slots);
+    hal_bufs_setup(ctx->tile_out_bufs, ctx->tile_out_count, 1, &ctx->tile_out_size);
+
+    return MPP_OK;
 }
 
 MPP_RET vdpu_av1d_gen_regs(void *hal, HalTaskInfo *task)
@@ -1837,31 +1876,7 @@ MPP_RET vdpu_av1d_gen_regs(void *hal, HalTaskInfo *task)
     regs = ctx->regs;
     memset(regs, 0, sizeof(*regs));
 
-    if (!ctx->tile_out_bufs) {
-        RK_U32 out_w = MPP_ALIGN(dxva->max_width * dxva->bitdepth, 16 * 8) / 8;
-        RK_U32 num_sbs = ((dxva->max_width + 63) / 64 + 1) * ((dxva->max_height + 63) / 64  + 1);
-        RK_U32 dir_mvs_size = MPP_ALIGN(num_sbs * 24 * 128 / 8, 16) * 2;
-        RK_U32 out_h = MPP_ALIGN(dxva->max_height, 16);
-        RK_U32 luma_size = out_w * out_h;
-        RK_U32 chroma_size = luma_size / 2;
-
-        ctx->hor_stride = out_w;
-        ctx->luma_size = luma_size;
-        ctx->chroma_size = chroma_size;
-        ctx->tile_out_size = luma_size + chroma_size + dir_mvs_size + 512;
-
-        if (ctx->tile_out_bufs) {
-            hal_bufs_deinit(ctx->tile_out_bufs);
-            ctx->tile_out_bufs = NULL;
-        }
-        hal_bufs_init(&ctx->tile_out_bufs);
-        if (!ctx->tile_out_bufs) {
-            mpp_err_f("tile out bufs init fail\n");
-            goto __RETURN;
-        }
-        ctx->tile_out_count = mpp_buf_slot_get_count(p_hal->slots);
-        hal_bufs_setup(ctx->tile_out_bufs, ctx->tile_out_count, 1, &ctx->tile_out_size);
-    }
+    vdpu_av1d_setup_tile_bufs(p_hal, dxva);
 
     if (!ctx->filter_mem || height > ctx->height || num_tile_cols > ctx->num_tile_cols) {
         if (ctx->filter_mem)
@@ -1916,7 +1931,11 @@ MPP_RET vdpu_av1d_gen_regs(void *hal, HalTaskInfo *task)
     regs->swreg5.sw_allow_warp          = dxva->coding.warped_motion;
     regs->swreg5.sw_show_frame          = dxva->format.show_frame;
     regs->swreg5.sw_switchable_motion_mode  = dxva->coding.switchable_motion_mode;
-    regs->swreg5.sw_enable_cdef         = dxva->coding.cdef_en;
+    regs->swreg5.sw_enable_cdef         = !(dxva->cdef.bits == 0 && dxva->cdef.damping == 0 &&
+                                            dxva->cdef.y_strengths[0].primary == 0 &&
+                                            dxva->cdef.y_strengths[0].secondary == 0 &&
+                                            dxva->cdef.uv_strengths[0].primary == 0 &&
+                                            dxva->cdef.uv_strengths[0].secondary == 0);
     regs->swreg5.sw_allow_masked_compound   = dxva->coding.masked_compound;
     regs->swreg5.sw_allow_interintra    = dxva->coding.interintra_compound;
     regs->swreg5.sw_enable_intra_edge_filter = dxva->coding.intra_edge_filter;
@@ -2306,6 +2325,7 @@ __SKIP_HARD:
         DecCbHalDone m_ctx;
         RK_U32 *prob_out = (RK_U32*)mpp_buffer_get_ptr(reg_ctx->prob_tbl_out_base);
 
+        mpp_buffer_sync_ro_begin(reg_ctx->prob_tbl_out_base);
         m_ctx.task = mpp_buffer_get_ptr(reg_ctx->prob_tbl_out_base);//(void *)&task->dec;
         m_ctx.regs = (RK_U32 *)prob_out;
         if (!p_regs->swreg1.sw_dec_rdy_int/* decode err */)

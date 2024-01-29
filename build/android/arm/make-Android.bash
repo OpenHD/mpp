@@ -9,6 +9,14 @@ ANDROID_ABI="armeabi-v7a with NEON"
 #Specify cmake if needed
 #CMAKE_PROGRAM=
 
+for ARG in "$@"; do
+  if [[ "$ARG" == "-c" ]]; then
+    clear
+  fi
+done
+
+MPP_PWD=`pwd`
+
 source ../env_setup.sh
 
 ${CMAKE_PROGRAM} -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE}                   \
