@@ -1,6 +1,6 @@
 #!/bin/bash
-#This file is the install instruction for the CHROOT build
-#We're using cloudsmith-cli to upload the file in CHROOT
+# This file is the install instruction for the CHROOT build
+# We're using cloudsmith-cli to upload the file in CHROOT
 
 sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
@@ -29,5 +29,16 @@ ls -a ../../../
 API_KEY=$(cat ../../../cloudsmith_api_key.txt)
 DISTRO=$(cat ../../../distro.txt)
 FLAVOR=$(cat ../../../flavor.txt)
-cloudsmith push deb --api-key "$API_KEY" openhd/openhd-2-3-evo/${DISTRO}/${FLAVOR} *.deb || exit 1
+BOARD=$(cat ../../../board.txt)
 
+if [ "$BOARD" = "rk3566" ]; then
+    for file in *.deb; do
+        mv "$file" "${file%.deb}-rk3566.deb"
+    done
+    cloudsmith push deb --api-key "$API_KEY" openhd/dev-release/${DISTRO}/${FLAVOR} *.deb || exit 1
+else
+for file in *.deb; do
+        mv "$file" "${file%.deb}-rk3588.deb"
+    done
+    cloudsmith push deb --api-key "$API_KEY" openhd/dev-release/${DISTRO}/${FLAVOR} *.deb || exit 1
+fi
