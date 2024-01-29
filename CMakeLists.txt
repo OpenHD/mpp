@@ -319,6 +319,7 @@ list( LENGTH module_list module_size )
 include_directories(inc)
 # small utile functions for test case
 include_directories(utils)
+include_directories(/usr/include/drm)
 
 # ----------------------------------------------------------------------------
 #  osal library
@@ -345,6 +346,7 @@ add_subdirectory(mpp)
 # ----------------------------------------------------------------------------
 add_subdirectory(test)
 
+include_directories(/usr/include/drm)
 # ----------------------------------------------------------------------------
 #  install headers
 # ----------------------------------------------------------------------------

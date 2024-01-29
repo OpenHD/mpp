@@ -14,12 +14,15 @@ macro(add_mpp_test module ext)
     option(${test_tag} "Build mpp ${module}.${ext} unit test" ${BUILD_TEST})
     if(${test_tag})
         add_executable(${test_name} ${file_name} mpp_event_trigger.c mpp_parse_cfg.c)
-        target_link_libraries(${test_name} ${MPP_SHARED} utils)
+        target_link_libraries(${test_name} ${MPP_SHARED} utils drm)
         set_target_properties(${test_name} PROPERTIES FOLDER "test")
         install(TARGETS ${test_name} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
         #add_test(NAME ${test_name} COMMAND ${test_name})
     endif()
 endmacro()
+
+add_mpp_test(mpp_disp c)
+
 
 # mpp info test
 add_mpp_test(mpp_info c)
