@@ -124,6 +124,8 @@ DRMInternal DrmFull = {0};
 DRMInternal *pDrm = &DrmFull;
 
 
+bool InitMPP(MppApi *mpi,  MppCtx ctx);
+
 static long long GetNowUs()
 {
     struct timeval now;
@@ -218,7 +220,7 @@ MPP_RET preader_read(PeteReader *slot)
 }
 
 uint8_t *Bufs[FRAMEBUFFERS] = {NULL};
-static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame, bool *CovertFrame)
+static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame)
 {
     MppApi *mpi = data->mpi;
     if (mpp_frame_get_info_change(frame)) 
@@ -353,10 +355,7 @@ static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame
                 assert(!ret);
                 
 
-                //printf("Set frame buffer %d\n", info.index);
-                int index = info.index;
                 
-                //*OutFrame = index;
                 *OutFrame = (RK_U8 *)mpp_buffer_get_ptr(buffer);
                 //printf("%p/%p\n", *OutFrame, Bufs[index]);
                 #if 0
@@ -406,9 +405,7 @@ static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame
 static int dec_simple(MpiDecLoopData *data)
 {
     RK_U32 pkt_done = 0;
-    RK_U32 pkt_eos  = 0;
     MPP_RET ret = MPP_OK;
-    MpiDecTestCmd *cmd = data->cmd;
     MppCtx ctx  = data->ctx;
     MppApi *mpi = data->mpi;
     MppPacket packet = data->packet;
@@ -482,9 +479,8 @@ static int dec_simple(MpiDecLoopData *data)
             }
             
             if (frame) {
-                bool CovertFrame = false;
                 uint8_t *OutFrame = NULL;
-                if(0 == ProcessFrame(frame, data, &OutFrame, &CovertFrame))
+                if(0 == ProcessFrame(frame, data, &OutFrame))
                 {
                     get_frm = 1;
                     
@@ -543,9 +539,18 @@ static int dec_simple(MpiDecLoopData *data)
         {
             TimeSinceFrameDisplayed = 0;
         }
+        
         if(2 == TimeSinceFrameDisplayed)
         {
             printf("Decoder not decoding. Try a restart\n");
+            TimeSinceFrameDisplayed = 0;
+            
+            ret = mpi->reset(ctx);
+            if (ret != MPP_OK) {
+                printf("failed to exec mpp->reset.\n");
+                return -1;
+            }
+            InitMPP(mpi, ctx);
         }
         
         DisplayedFrames = 0; 
@@ -589,6 +594,57 @@ void *thread_decode(void *arg)
     return NULL;
 }
 
+bool InitMPP(MppApi *mpi,  MppCtx ctx)
+{
+    
+    // config for runtime mode
+    MppDecCfg cfg       = NULL;
+    RK_U32 need_split   = 1;
+    
+    int fast_mode = 1;
+    
+    mpp_dec_cfg_init(&cfg);
+
+    /* get default config from decoder context */
+    int ret = mpi->control(ctx, MPP_DEC_GET_CFG, cfg);
+    if (ret) {
+        mpp_err("%p failed to get decoder cfg ret %d\n", ctx, ret);
+        return false;
+    }
+
+    /*
+     * split_parse is to enable mpp internal frame spliter when the input
+     * packet is not aplited into frames.
+     */
+    ret = mpp_dec_cfg_set_u32(cfg, "base:split_parse", need_split);
+    if (ret) {
+        mpp_err("%p failed to set split_parse ret %d\n", ctx, ret);
+        return false;
+    }
+
+    RK_U32 dat = 0xffff;
+    RK_U32 ret1 = mpi->control(ctx, MPP_DEC_SET_PARSER_SPLIT_MODE, &dat);
+     dat = 0xffff;
+    RK_U32 ret2 = mpi->control(ctx, MPP_DEC_SET_DISABLE_ERROR, &dat);
+     dat = 0xffff;
+    RK_U32 ret3 = mpi->control(ctx, MPP_DEC_SET_IMMEDIATE_OUT, &dat);
+    dat = 0xffff;
+    RK_U32 ret4 = mpi->control(ctx, MPP_DEC_SET_ENABLE_FAST_PLAY, &dat);
+    if(ret1 | ret2 | ret3 |ret4)
+    {
+        printf("Could not set decoder params on startup\n");
+        return false;
+    }
+    ret = mpi->control(ctx, MPP_DEC_SET_CFG, cfg);
+    if (ret) {
+        mpp_err("%p failed to set cfg %p ret %d\n", ctx, cfg, ret);
+        return false;
+    }
+  mpi->control (ctx, MPP_DEC_SET_PARSER_FAST_MODE,
+        &fast_mode);
+    return true;
+}
+
 int dec_decode(MpiDecTestCmd *cmd)
 {
     // base flow context
@@ -604,9 +660,6 @@ int dec_decode(MpiDecTestCmd *cmd)
     RK_U32 height       = cmd->height;
     MppCodingType type  = cmd->type;
 
-    // config for runtime mode
-    MppDecCfg cfg       = NULL;
-    RK_U32 need_split   = 1;
 
     // resources
     MppBuffer frm_buf   = NULL;
@@ -620,20 +673,6 @@ int dec_decode(MpiDecTestCmd *cmd)
     pthread_attr_init(&attr);
 
     cmd->simple = (cmd->type != MPP_VIDEO_CodingMJPEG) ? (1) : (0);
-
-    if (cmd->have_output) {
-        data.fp_output = fopen(cmd->file_output, "w+b");
-        if (NULL == data.fp_output) {
-            mpp_err("failed to open output file %s\n", cmd->file_output);
-            goto MPP_TEST_OUT;
-        }
-    }
-
-    if (cmd->file_slt) {
-        data.fp_verify = fopen(cmd->file_slt, "wt");
-        if (!data.fp_verify)
-            mpp_err("failed to open verify file %s\n", cmd->file_slt);
-    }
 
     ret = dec_buf_mgr_init(&data.buf_mgr);
     if (ret) {
@@ -670,46 +709,11 @@ int dec_decode(MpiDecTestCmd *cmd)
         mpp_err("%p mpp_init failed\n", ctx);
         goto MPP_TEST_OUT;
     }
-
-    mpp_dec_cfg_init(&cfg);
-
-    /* get default config from decoder context */
-    ret = mpi->control(ctx, MPP_DEC_GET_CFG, cfg);
-    if (ret) {
-        mpp_err("%p failed to get decoder cfg ret %d\n", ctx, ret);
-        goto MPP_TEST_OUT;
-    }
-
-    /*
-     * split_parse is to enable mpp internal frame spliter when the input
-     * packet is not aplited into frames.
-     */
-    ret = mpp_dec_cfg_set_u32(cfg, "base:split_parse", need_split);
-    if (ret) {
-        mpp_err("%p failed to set split_parse ret %d\n", ctx, ret);
-        goto MPP_TEST_OUT;
-    }
-
-    RK_U32 dat = 0xffff;
-    RK_U32 ret1 = mpi->control(ctx, MPP_DEC_SET_PARSER_SPLIT_MODE, &dat);
-     dat = 0xffff;
-    RK_U32 ret2 = mpi->control(ctx, MPP_DEC_SET_DISABLE_ERROR, &dat);
-     dat = 0xffff;
-    RK_U32 ret3 = mpi->control(ctx, MPP_DEC_SET_IMMEDIATE_OUT, &dat);
-    dat = 0xffff;
-    RK_U32 ret4 = mpi->control(ctx, MPP_DEC_SET_ENABLE_FAST_PLAY, &dat);
-    if(ret1 | ret2 | ret3 |ret4)
+    if(false == InitMPP(mpi, ctx))
     {
-        printf("Could not set decoder params on startup\n");
-        return false;
-    }
-    ret = mpi->control(ctx, MPP_DEC_SET_CFG, cfg);
-    if (ret) {
-        mpp_err("%p failed to set cfg %p ret %d\n", ctx, cfg, ret);
         goto MPP_TEST_OUT;
     }
-  mpi->control (ctx, MPP_DEC_SET_PARSER_FAST_MODE,
-        &fast_mode);
+    
     data.cmd            = cmd;
     data.ctx            = ctx;
     data.mpi            = mpi;
@@ -766,12 +770,12 @@ MPP_TEST_OUT:
         dec_buf_mgr_deinit(data.buf_mgr);
         data.buf_mgr = NULL;
     }
-
+/*
     if (cfg) {
         mpp_dec_cfg_deinit(cfg);
         cfg = NULL;
     }
-
+*/
     pthread_attr_destroy(&attr);
 
     return ret;
