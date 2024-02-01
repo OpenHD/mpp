@@ -6,7 +6,7 @@ sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
 sudo apt install -y git ruby-dev make cmake gcc g++ wget libdrm-dev mlocate 
 gem install fpm
-locate drm.h
+sudo updatedb && locate -e drm.h
 ls -a /usr/include/
 exit 1
 cd build/linux/aarch64
