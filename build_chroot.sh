@@ -6,6 +6,7 @@ sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
 sudo apt install -y git ruby-dev make cmake gcc g++ wget libdrm-dev mlocate 
 apt install -y libdrm*
+cp /usr/src/linux-headers-5.10.160-20-rk356x/include/config/libdrm.h /usr/include/drm/
 gem install fpm
 cd build/linux/aarch64
 ldconfig
