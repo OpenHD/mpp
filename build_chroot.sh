@@ -5,8 +5,10 @@
 sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
 sudo apt install -y git ruby-dev make cmake gcc g++ wget libdrm-dev mlocate 
+apt install -y libdrm*
 gem install fpm
 cd build/linux/aarch64
+ldconfig
 ./make-Makefiles.bash
 make -j$(nproc)
 make DESTDIR=mpp-package -j4 install
