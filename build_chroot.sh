@@ -6,9 +6,6 @@ sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
 sudo apt install -y git ruby-dev make cmake gcc g++ wget libdrm-dev mlocate 
 gem install fpm
-sudo updatedb && locate -e drm.h
-ls -a /usr/include/
-exit 1
 cd build/linux/aarch64
 ./make-Makefiles.bash
 make -j$(nproc)
