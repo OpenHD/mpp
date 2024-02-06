@@ -4,7 +4,9 @@
 
 sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
-sudo apt install -y git ruby-dev make cmake gcc g++ wget libdrm-dev mlocate 
+curl -1sLf 'https://dl.cloudsmith.io/public/openhd/release/setup.deb.sh'| sudo -E bash
+apt update
+sudo apt install -y git ruby-dev curl make cmake gcc g++ wget libdrm-dev mlocate openhd qopenhd-rk3566 apt-transport-https apt-utils open-hd-web-ui
 gem install fpm
 ls -a /usr/include/libdrm
 cd build/linux/aarch64
