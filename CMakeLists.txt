@@ -347,7 +347,7 @@ add_subdirectory(mpp)
 # ----------------------------------------------------------------------------
 add_subdirectory(test)
 
-include_directories(\usr\lib\aarch64-linux-gnu\)
+include_directories(/usr/lib/aarch64-linux-gnu/)
 # ----------------------------------------------------------------------------
 #  install headers
 # ----------------------------------------------------------------------------
