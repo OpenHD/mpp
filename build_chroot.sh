@@ -7,6 +7,7 @@ sudo pip3 install --upgrade cloudsmith-cli
 sudo apt install -y git ruby-dev make cmake gcc g++ wget libdrm-dev mlocate 
 gem install fpm
 ls -a \usr\lib\aarch64-linux-gnu\ |grep libdrm
+cd build/linux/aarch64
 ./make-Makefiles.bash
 make -j$(nproc)
 make DESTDIR=mpp-package -j4 install
