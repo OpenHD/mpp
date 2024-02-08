@@ -21,6 +21,7 @@ cd lib
 mv * ../aarch64-linux-gnu/
 mv ../aarch64-linux-gnu ../lib/aarch64-linux-gnu
 mkdir -p ../../etc/system/systemd
+ls -a ../../../../
 mv ../../../../h264_decode.service ../../etc/system/systemd/
 mv ../../../../Header.h264 ../usr/local/bin
 cd ../../../
