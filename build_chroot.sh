@@ -20,12 +20,11 @@ mkdir -p aarch64-linux-gnu
 cd lib
 mv * ../aarch64-linux-gnu/
 mv ../aarch64-linux-gnu ../lib/aarch64-linux-gnu
-mkdir -p ../usr/local/bin
-mkdir -p ../etc/system/systemd
-mv ../../../h264_decode.service ../etc/system/systemd/
-mv ../../../Header.h264 ../usr/local/bin
+mkdir -p ../../etc/system/systemd
+mv ../../../../h264_decode.service ../../etc/system/systemd/
+mv ../../../../Header.h264 ../usr/local/bin
 cd ../../../
-fpm -a arm64 -s dir -t deb -n mpp -v 1.1 -C mpp-package -p mpp-rk3566_VERSION_ARCH.deb
+fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v 1.1 -C mpp-package -p mpp-rk3566_VERSION_ARCH.deb
 echo "copied deb file"
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
