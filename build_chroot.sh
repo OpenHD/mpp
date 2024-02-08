@@ -34,14 +34,14 @@ DISTRO=$(cat ../../../distro.txt)
 FLAVOR=$(cat ../../../flavor.txt)
 BOARD=$(cat ../../../board.txt)
 
-if [ "$BOARD" = "rk3566" ]; then
+if [ "$BOARD" = "rk3588" ]; then
     for file in *.deb; do
-        mv "$file" "${file%.deb}-rk3566.deb"
+        mv "$file" "${file%.deb}-rk3588.deb"
     done
     cloudsmith push deb --api-key "$API_KEY" openhd/dev-release/${DISTRO}/${FLAVOR} *.deb || exit 1
 else
 for file in *.deb; do
-        mv "$file" "${file%.deb}-rk3588.deb"
+        mv "$file" "${file%.deb}-rk3566.deb"
     done
     cloudsmith push deb --api-key "$API_KEY" openhd/dev-release/${DISTRO}/${FLAVOR} *.deb || exit 1
 fi
