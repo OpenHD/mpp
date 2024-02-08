@@ -1,7 +1,6 @@
 #!/bin/bash
 # This file is the install instruction for the CHROOT build
 # We're using cloudsmith-cli to upload the file in CHROOT
-echo "Current directory: $(pwd)"
 sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
 curl -1sLf 'https://dl.cloudsmith.io/public/openhd/release/setup.deb.sh'| sudo -E bash
@@ -20,13 +19,14 @@ cd lib
 mv * ../aarch64-linux-gnu/
 mv ../aarch64-linux-gnu ../lib/aarch64-linux-gnu
 mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/etc/system/systemd
-mv /opt/additionalFiles/h264_decode.service opt/additionalFiles/build/linux/aarch64/mpp-package/etc/system/systemd/
+mv /opt/additionalFiles/h264_decode.service /opt/additionalFiles/build/linux/aarch64/mpp-package/etc/system/systemd/
 mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin
 mv /opt/additionalFiles/Header.h264 /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/
 cd ../../../
-ls
+ls -a
+exit 1
 VERSION="1.1-$(date +'%m/%d/%Y')"
-fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v "$VERSION" -C /opt/additionalFiles/build/linux/aarch64/mpp-package -p mpp-rk3566_VERSION_ARCH.debecho "copied deb file"
+fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v "$VERSION" -C /opt/additionalFiles/build/linux/aarch64/mpp-package/ -p mpp-rk3566_VERSION_ARCH.debecho "copied deb file"
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
 echo "Pushing the package to OpenHD 2.3 repository"
