@@ -347,7 +347,8 @@ add_subdirectory(mpp)
 # ----------------------------------------------------------------------------
 add_subdirectory(test)
 
-include_directories(/usr/include/libdrm/)
+include_directories(/usr/include/drm)
+include_directories(/usr/include/libdrm)
 # ----------------------------------------------------------------------------
 #  install headers
 # ----------------------------------------------------------------------------
