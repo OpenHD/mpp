@@ -21,12 +21,11 @@ cd lib
 mv * ../aarch64-linux-gnu/
 mv ../aarch64-linux-gnu ../lib/aarch64-linux-gnu
 mkdir -p ../../etc/system/systemd
-ls -a ../../../../
 mv /opt/additionalFiles/h264_decode.service ../../etc/system/systemd/
 mv /opt/additionalFiles/Header.h264 ../usr/local/bin
 cd ../../../
-fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v 1.1 -C mpp-package -p mpp-rk3566_VERSION_ARCH.deb
-echo "copied deb file"
+VERSION="1.1-$(date +'%m/%d/%Y')"
+fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v "$VERSION" -C mpp-package -p mpp-rk3566_VERSION_ARCH.debecho "copied deb file"
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
 echo "Pushing the package to OpenHD 2.3 repository"
