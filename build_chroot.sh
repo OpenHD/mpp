@@ -26,7 +26,7 @@ cd ../../../
 ls -a
 exit 1
 VERSION="1.1-$(date +'%m/%d/%Y')"
-fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v "$VERSION" -C /opt/additionalFiles/build/linux/aarch64/mpp-package/ -p mpp-rk3566_VERSION_ARCH.debecho "copied deb file"
+fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v "$VERSION" -C mpp-package -p mpp-rk3566_VERSION_ARCH.deb
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
 echo "Pushing the package to OpenHD 2.3 repository"
