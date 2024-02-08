@@ -1,7 +1,7 @@
 #!/bin/bash
 # This file is the install instruction for the CHROOT build
 # We're using cloudsmith-cli to upload the file in CHROOT
-
+echo "Current directory: $(pwd)"
 sudo apt install -y python3-pip
 sudo pip3 install --upgrade cloudsmith-cli
 curl -1sLf 'https://dl.cloudsmith.io/public/openhd/release/setup.deb.sh'| sudo -E bash
@@ -12,7 +12,6 @@ cd build/linux/aarch64
 ./make-Makefiles.bash
 make -j$(nproc)
 make DESTDIR=mpp-package -j4 install
-echo "Current directory: $(pwd)"
 cd mpp-package/usr/local
 mv lib ../
 cd ../
