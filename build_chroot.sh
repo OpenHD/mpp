@@ -8,7 +8,6 @@ curl -1sLf 'https://dl.cloudsmith.io/public/openhd/release/setup.deb.sh'| sudo -
 apt update
 sudo apt install -y git ruby-dev curl make cmake gcc g++ wget libdrm-dev mlocate openhd qopenhd-rk3566 apt-transport-https apt-utils open-hd-web-ui
 gem install fpm
-ls -a /usr/include/libdrm
 cd build/linux/aarch64
 ./make-Makefiles.bash
 make -j$(nproc)
@@ -21,6 +20,10 @@ mkdir -p aarch64-linux-gnu
 cd lib
 mv * ../aarch64-linux-gnu/
 mv ../aarch64-linux-gnu ../lib/aarch64-linux-gnu
+mkdir -p ../usr/local/bin
+mkdir -p ../etc/system/systemd
+mv ../../../h264_decode.service ../etc/system/systemd/
+mv ../../../Header.h264 ../usr/local/bin
 cd ../../../
 fpm -a arm64 -s dir -t deb -n mpp -v 1.0 -C mpp-package -p mpp_VERSION_ARCH.deb
 echo "copied deb file"

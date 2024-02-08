@@ -142,7 +142,7 @@ MPP_RET preader_read(PeteReader *slot)
     {
         fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
         Configured = true;
-        FILE *fp = fopen("/home/openhd/Header.h264", "rb");
+        FILE *fp = fopen("/usr/local/bin/Header.h264", "rb");
         if(fp)
         {
             fseek(fp, 0L, SEEK_END);
