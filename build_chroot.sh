@@ -23,19 +23,15 @@ mv /opt/additionalFiles/h264_decode.service /opt/additionalFiles/build/linux/aar
 mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin
 mv /opt/additionalFiles/Header.h264 /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/
 cd ../../../
-ls -a
-exit 1
 VERSION="1.1-$(date +'%m/%d/%Y')"
 fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v "$VERSION" -C mpp-package -p mpp-rk3566_VERSION_ARCH.deb
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
 echo "Pushing the package to OpenHD 2.3 repository"
-ls -a
-ls -a ../../../
-API_KEY=$(cat ../../../cloudsmith_api_key.txt)
-DISTRO=$(cat ../../../distro.txt)
-FLAVOR=$(cat ../../../flavor.txt)
-BOARD=$(cat ../../../board.txt)
+API_KEY=$(cat /opt/additionalFiles/cloudsmith_api_key.txt)
+DISTRO=$(cat /opt/additionalFiles/distro.txt)
+FLAVOR=$(cat /opt/additionalFiles/flavor.txt)
+BOARD=$(cat /opt/additionalFiles/board.txt)
 
 if [ "$BOARD" = "rk3588" ]; then
     for file in *.deb; do
