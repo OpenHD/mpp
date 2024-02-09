@@ -24,6 +24,7 @@ mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin
 mv /opt/additionalFiles/Header.h264 /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/
 cd ../../../
 VERSION="1.1-$(date +'%m/%d/%Y')"
+VERSION=$(echo "$VERSION" | sed 's/\//-/g')
 fpm -a arm64 -s dir -t deb -n mpp-rk3566 -v "$VERSION" -C mpp-package -p mpp-rk3566_VERSION_ARCH.deb
 echo "push to cloudsmith"
 git describe --exact-match HEAD >/dev/null 2>&1
