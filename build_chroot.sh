@@ -22,6 +22,8 @@ mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/etc/system/systemd
 mv /opt/additionalFiles/h264_decode.service /opt/additionalFiles/build/linux/aarch64/mpp-package/etc/system/systemd/
 mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin
 mv /opt/additionalFiles/Header.h264 /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/
+mv /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/openhd_vid_test /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/openhd_vid
+chmod +x /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/openhd_vid
 cd ../../../
 VERSION="1.1-$(date +'%m/%d/%Y')"
 VERSION=$(echo "$VERSION" | sed 's/\//-/g')
