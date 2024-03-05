@@ -21,7 +21,7 @@ macro(add_mpp_test module ext)
     endif()
 endmacro()
 
-add_mpp_test(mpp_disp c)
+add_mpp_test(openhd_vid c)
 
 
 # mpp info test
