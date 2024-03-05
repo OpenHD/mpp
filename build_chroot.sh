@@ -18,7 +18,7 @@ mkdir -p aarch64-linux-gnu
 cd lib
 mv * ../aarch64-linux-gnu/
 mv ../aarch64-linux-gnu ../lib/aarch64-linux-gnu
-mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/etc/system/systemd
+mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/etc/systemd/system/
 mv /opt/additionalFiles/h264_decode.service /opt/additionalFiles/build/linux/aarch64/mpp-package/etc/systemd/system/
 mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin
 mv /opt/additionalFiles/Header.h264 /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/
