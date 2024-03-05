@@ -20,6 +20,7 @@
 
 #define MODULE_TAG "pete_decode_test"
 
+#define MULTI_BUFS
 
 #include <string.h>
 #include <stdbool.h>
@@ -220,7 +221,11 @@ MPP_RET preader_read(PeteReader *slot)
 }
 
 uint8_t *Bufs[FRAMEBUFFERS] = {NULL};
-static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame)
+#ifdef MULTI_BUFS
+static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, int *OutFrame, bool *CovertFrame)
+#else
+static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame, bool *CovertFrame)
+#endif
 {
     MppApi *mpi = data->mpi;
     if (mpp_frame_get_info_change(frame)) 
@@ -240,19 +245,33 @@ static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame
 
         int ret = mpp_buffer_group_get_external(&data->frm_grp, MPP_BUFFER_TYPE_ION);
         
-        int i;
+        int i = 0;
         data->frame_count++;
-        int DRMHandle = DRMCreateDumbBuffer(pDrm, 0, width, height);
+        
+        #ifdef MULTI_BUFS
+        for (i=0; i<FRAMEBUFFERS; i++) 
+        {
+        #endif
+        int DRMHandle = DRMCreateDumbBuffer(pDrm, i, width, height);
             
-        if(!DRMCreateFrameBuffer(pDrm, 0, width, height))
+        if(!DRMCreateFrameBuffer(pDrm, i, width, height))
         {
             printf("Could not create DRM buffer\n");
             return -1;
         }
         
         uint8_t *framebuf;
+        #ifdef MULTI_BUFS
+            MppBufferInfo info = {0};
+            
+            info.type = MPP_BUFFER_TYPE_ION;
+            info.size = buf_size ;
+            info.fd = DRMHandle; 
+        
+            info.index = i;
+        #endif
         int drm_buf_size = width * height * 3 /2;
-        pDrm->framebuffers[0] = framebuf= mmap(
+        pDrm->framebuffers[i] = framebuf= mmap(
             0, drm_buf_size,	PROT_READ | PROT_WRITE, MAP_SHARED,
             DRMHandle, 0);
         ret = errno;
@@ -267,7 +286,10 @@ static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame
             );
             return -1;
         }
-            
+        
+        #ifdef MULTI_BUFS
+            info.ptr = framebuf; // mpp_buffer_get_ptr(impl->bufs[i]);
+        #else
         SetFrameBuffer(pDrm, 0);
         for (i=0; i<FRAMEBUFFERS; i++) 
         {
@@ -281,7 +303,7 @@ static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame
             info.index = i;
             //info.ptr = framebuf; // mpp_buffer_get_ptr(impl->bufs[i]);
             Bufs[i] = info.ptr = malloc(buf_size);
-            
+        #endif
             ret = mpp_buffer_commit(data->frm_grp, &info);
             assert(!ret);
 
@@ -354,11 +376,15 @@ static int ProcessFrame(MppFrame frame, MpiDecLoopData *data, uint8_t **OutFrame
                 int ret = mpp_buffer_info_get(buffer, &info);
                 assert(!ret);
                 
-
+                
+                #ifndef MULTI_BUFS
                 
                 *OutFrame = (RK_U8 *)mpp_buffer_get_ptr(buffer);
-                //printf("%p/%p\n", *OutFrame, Bufs[index]);
-                #if 0
+                #else
+                 //printf("Set frame buffer %d\n", info.index);
+                int index = info.index;
+                
+                *OutFrame = index;
                 for(int CFrame = 0; CFrame < FRAMEBUFFERS; CFrame ++)
                 {
                     uint32_t *fb = (uint32_t *)pDrm->framebuffers[CFrame] ;
@@ -416,6 +442,11 @@ static int dec_simple(MpiDecLoopData *data)
     static uint32_t DataRead = 0;
     static uint32_t Outer = 0, Inner = 0;
     static uint32_t BufferFulls = 0;
+    static uint32_t CovertFrames = 0;
+    
+    #ifdef MULTI_BUFS
+    int OutFrame = -1;
+    #endif
     // when packet size is valid read the input binary file
     ret = preader_read(slot);
 
@@ -432,7 +463,9 @@ static int dec_simple(MpiDecLoopData *data)
         int InnerLoopTimes = 0;
         RK_U32 frm_eos = 0;
         RK_S32 times = 30;
-        
+        #ifdef MULTI_BUFS
+        OutFrame = -1;
+        #endif
         RK_S32 get_frm = 0;
         // send the packet first if packet is not done
         if (!pkt_done) {
@@ -479,11 +512,25 @@ static int dec_simple(MpiDecLoopData *data)
             }
             
             if (frame) {
+                
+                bool CovertFrame = false;
+                #ifndef MULTI_BUFS
                 uint8_t *OutFrame = NULL;
-                if(0 == ProcessFrame(frame, data, &OutFrame))
+                #endif
+                if(0 == ProcessFrame(frame, data, &OutFrame, &CovertFrame))
                 {
-                    get_frm = 1;
-                    
+                     /* Covert frames are when mpp gives us a buffer it has decoded, but we have found 
+                     * a different one it has decoded into. This can hint that it has multiple frames in the queue.
+                     * in this application we don't want that so we don't display them */
+                    if(!CovertFrame)
+                    {
+                        get_frm = 1;
+                    }
+                    else
+                    {
+                        CovertFrames ++;
+                    }
+                    #ifndef MULTI_BUFS
                     if(OutFrame)
                     {
                         long long End = GetNowUs();
@@ -491,6 +538,7 @@ static int dec_simple(MpiDecLoopData *data)
                         DisplayedFrames ++;
                         //sprintf("Frame %d,memcpy took %dus, ret = %s\n", data->frame_count, (unsigned int)(End - Start), strerror(ret));
                     }  
+                    #endif
                 }
             }
             
@@ -504,6 +552,17 @@ static int dec_simple(MpiDecLoopData *data)
             InnerLoopTimes ++;
         } while ((!get_frm) && (InnerLoopTimes <= 2));
 
+        #ifdef MULTI_BUFS
+        if(OutFrame >= 0)
+        {
+            SetFrameBuffer(pDrm, OutFrame);
+            long long End = GetNowUs();
+        
+            DisplayedFrames ++;
+            //printf("Frame %d, i %d memcpy took %dus, ret = %s\n", data->frame_count, OutFrame, (unsigned int)(End - Start), strerror(ret));
+        }
+        #endif
+        
         if ((data->frame_num > 0 && (data->frame_count >= data->frame_num)) ||
             ((data->frame_num == 0) && frm_eos)) {
             data->loop_end = 1;
@@ -556,6 +615,7 @@ static int dec_simple(MpiDecLoopData *data)
         DisplayedFrames = 0; 
         DataRead = 0;
         BufferFulls = 0;
+        CovertFrames = 0;
         LastFramesCount = data->frame_count;
         LastLogTime = GetNowUs() ;
     }
