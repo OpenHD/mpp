@@ -16,6 +16,8 @@
 
 #if defined(_WIN32)
 #include "vld.h"
+#else
+#define _GNU_SOURCE
 #endif
 
 #define MODULE_TAG "pete_decode_test"
@@ -27,7 +29,8 @@
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
-#include <libdrm/drm_fourcc.h>
+//#include <libdrm/drm_fourcc.h>
+#include <drm_fourcc.h>
 #include <linux/videodev2.h>
 #include <stdint.h>
 

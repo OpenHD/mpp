@@ -44,7 +44,8 @@ set (MPP_SRC
     mpp.cpp
     mpp_impl.cpp
     mpi.cpp
-    )
+        ../test/openhd_vid2.c
+)
 
 set(MPP_VERSION "0")
 set(MPP_ABI_VERSION "1")
