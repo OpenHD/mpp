@@ -321,7 +321,7 @@ include_directories(inc)
 include_directories(utils)
 include_directories(/usr/include/drm)
 #include_directories(/usr/src/linux-headers-5.10.160-20-rk356x/include/config/)
-include_directories(/usr/src/linux-headers-5.10.160-28-rk356x/include/config/)
+#include_directories(/usr/src/linux-headers-5.10.160-28-rk356x/include/config/)
 
 # ----------------------------------------------------------------------------
 #  osal library
