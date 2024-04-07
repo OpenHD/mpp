@@ -22,7 +22,7 @@ mv ../aarch64-linux-gnu ../lib/aarch64-linux-gnu
 # mv /opt/additionalFiles/h264_decode.service /opt/additionalFiles/build/linux/aarch64/mpp-package/etc/systemd/system/
 mkdir -p /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin
 mv /opt/additionalFiles/Header.h264 /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/
-mv /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/openhd_vid_test /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/openhd_vid
+#mv /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/openhd_vid_test /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/openhd_vid
 chmod +x /opt/additionalFiles/build/linux/aarch64/mpp-package/usr/local/bin/openhd_vid
 cd ../../../
 VERSION="1.2-$(date -d '+1 hour' +'%m-%d-%Y--%H-%M-%S')"
