@@ -83,6 +83,8 @@ static HEVCFrame *alloc_frame(HEVCContext *s)
 {
     RK_U32  i;
     MPP_RET ret = MPP_OK;
+    MppFrameFormat fmt = s->h265dctx->cfg->base.out_fmt & (~MPP_FRAME_FMT_MASK);
+
     for (i = 0; i < MPP_ARRAY_ELEMS(s->DPB); i++) {
         HEVCFrame *frame = &s->DPB[i];
         if (frame->slot_index != 0xff) {
@@ -95,9 +97,11 @@ static HEVCFrame *alloc_frame(HEVCContext *s)
         mpp_frame_set_hor_stride(frame->frame,
                                  (MPP_ALIGN(s->h265dctx->coded_width, 64) * s->h265dctx->nBitDepth) >> 3);
         mpp_frame_set_ver_stride(frame->frame, s->h265dctx->coded_height);
+        s->h265dctx->pix_fmt &= MPP_FRAME_FMT_MASK;
         if (s->is_hdr) {
             s->h265dctx->pix_fmt |= MPP_FRAME_HDR;
         }
+        s->h265dctx->pix_fmt |= fmt;
         mpp_frame_set_fmt(frame->frame, s->h265dctx->pix_fmt);
 
         if (MPP_FRAME_FMT_IS_FBC(s->h265dctx->pix_fmt)) {
@@ -114,6 +118,8 @@ static HEVCFrame *alloc_frame(HEVCContext *s)
                 fbc_hdr_stride = MPP_ALIGN(s->h265dctx->width, 256) | 256;
 
             mpp_frame_set_fbc_hdr_stride(frame->frame, fbc_hdr_stride);
+        } else if (MPP_FRAME_FMT_IS_TILE(s->h265dctx->pix_fmt)) {
+            /* nothing todo */
         } else {
             if ((s->h265dctx->cfg->base.enable_vproc & MPP_VPROC_MODE_DETECTION) &&
                 s->h265dctx->width <= 1920 &&  s->h265dctx->height <= 1088)
@@ -121,7 +127,7 @@ static HEVCFrame *alloc_frame(HEVCContext *s)
         }
 
         if (s->h265dctx->cfg->base.enable_thumbnail && s->h265dctx->hw_info->cap_down_scale)
-            mpp_frame_set_thumbnail_en(frame->frame, 1);
+            mpp_frame_set_thumbnail_en(frame->frame, s->h265dctx->cfg->base.enable_thumbnail);
         else
             mpp_frame_set_thumbnail_en(frame->frame, 0);
 

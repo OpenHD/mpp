@@ -599,6 +599,7 @@ MPP_RET mpp_enc_refs_dryrun(MppEncRefs refs)
 
     cleanup_cpb_refs(cpb);
 
+    cfg->max_tlayers = cpb->info.max_st_tid + 1;
     enc_refs_dbg_flow("dryrun start: lt_cfg %d st_cfg %d\n",
                       lt_cfg_cnt, st_cfg_cnt);
 
@@ -892,7 +893,7 @@ MPP_RET mpp_enc_refs_get_cpb(MppEncRefs refs, EncCpbStatus *status)
     }
 
     if (usr_cfg->force_flag & ENC_FORCE_PSKIP) {
-        frm->is_non_ref = 1;
+        frm->force_pskip = 1;
 
         usr_cfg->force_flag &= ~ENC_FORCE_PSKIP;
     }

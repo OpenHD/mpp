@@ -673,13 +673,15 @@ MPP_RET mpp_enc_roi_init(MppEncRoiCtx *ctx, RK_U32 w, RK_U32 h, MppCodingType ty
     case ROI_TYPE_1 : {
         RK_S32 mb_w = MPP_ALIGN(impl->w, 16) / 16;
         RK_S32 mb_h = MPP_ALIGN(impl->h, 16) / 16;
+        RK_U32 ctu_w = MPP_ALIGN(impl->w, 64) / 64;
+        RK_U32 ctu_h  = MPP_ALIGN(impl->w, 64) / 64;
         RK_S32 stride_h = MPP_ALIGN(mb_w, 4);
         RK_S32 stride_v = MPP_ALIGN(mb_h, 4);
 
         mpp_log("set to vepu54x roi generation\n");
 
         impl->base_cfg_size = stride_h * stride_v * sizeof(Vepu541RoiCfg);
-        mpp_buffer_group_get_internal(&impl->roi_grp, MPP_BUFFER_TYPE_ION);
+        mpp_buffer_group_get_internal(&impl->roi_grp, MPP_BUFFER_TYPE_ION | MPP_BUFFER_FLAGS_CACHABLE);
 
         mpp_buffer_get(impl->roi_grp, &impl->roi_cfg.base_cfg_buf, impl->base_cfg_size);
         if (!impl->roi_cfg.base_cfg_buf) {
@@ -690,7 +692,14 @@ MPP_RET mpp_enc_roi_init(MppEncRoiCtx *ctx, RK_U32 w, RK_U32 h, MppCodingType ty
         /* create tmp buffer for hevc */
         if (type == MPP_VIDEO_CodingHEVC) {
             impl->tmp = mpp_malloc(Vepu541RoiCfg, stride_h * stride_v);
-            if (!impl->tmp)
+            impl->cu_map  = mpp_calloc(RK_U8, ctu_w * ctu_h);
+            impl->cu_size = ctu_w * ctu_h;
+            if (!impl->tmp || !impl->cu_map)
+                goto done;
+        } else {
+            impl->cu_map   = mpp_calloc(RK_U8, mb_w * mb_h);
+            impl->cu_size  = mb_w * mb_h;
+            if (!impl->cu_map)
                 goto done;
         }
 
@@ -722,7 +731,7 @@ MPP_RET mpp_enc_roi_init(MppEncRoiCtx *ctx, RK_U32 w, RK_U32 h, MppCodingType ty
         mpp_log("set to vepu58x roi generation\n");
 
         impl->roi_cfg.roi_qp_en = 1;
-        mpp_buffer_group_get_internal(&impl->roi_grp, MPP_BUFFER_TYPE_ION);
+        mpp_buffer_group_get_internal(&impl->roi_grp, MPP_BUFFER_TYPE_ION | MPP_BUFFER_FLAGS_CACHABLE);
         mpp_buffer_get(impl->roi_grp, &impl->roi_cfg.base_cfg_buf, impl->base_cfg_size);
         if (!impl->roi_cfg.base_cfg_buf) {
             goto done;
@@ -852,6 +861,7 @@ MPP_RET mpp_enc_roi_setup_meta(MppEncRoiCtx ctx, MppMeta meta)
         }
 
         mpp_meta_set_ptr(meta, KEY_ROI_DATA2, (void*)&impl->roi_cfg);
+        mpp_buffer_sync_ro_end(impl->roi_cfg.base_cfg_buf);
     } break;
     case ROI_TYPE_2 : {
         gen_vepu54x_roi(impl, impl->tmp);
@@ -868,6 +878,8 @@ MPP_RET mpp_enc_roi_setup_meta(MppEncRoiCtx ctx, MppMeta meta)
         }
 
         mpp_meta_set_ptr(meta, KEY_ROI_DATA2, (void*)&impl->roi_cfg);
+        mpp_buffer_sync_ro_end(impl->roi_cfg.base_cfg_buf);
+        mpp_buffer_sync_ro_end(impl->roi_cfg.qp_cfg_buf);
     } break;
     case ROI_TYPE_LEGACY : {
         MppEncROIRegion *region = impl->legacy_roi_region;

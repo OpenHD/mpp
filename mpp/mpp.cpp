@@ -50,6 +50,18 @@ static void mpp_notify_by_buffer_group(void *arg, void *group)
 
 static void *list_wraper_packet(void *arg)
 {
+    MppPacket packet = *(MppPacket*)arg;
+
+    if (mpp_packet_has_meta(packet)) {
+        MppMeta meta = mpp_packet_get_meta(packet);
+        MppFrame frm = NULL;
+
+        if (MPP_OK == mpp_meta_get_frame(meta, KEY_INPUT_FRAME, &frm)) {
+            mpp_assert(frm);
+            mpp_frame_deinit(&frm);
+        }
+    }
+
     mpp_packet_deinit((MppPacket *)arg);
     return NULL;
 }
@@ -62,15 +74,16 @@ static void *list_wraper_frame(void *arg)
 
 static RK_S32 check_frm_task_cnt_cap(MppCodingType coding)
 {
-    if (strstr(mpp_get_soc_name(), "rk3588")) {
+    RockchipSocType soc_type = mpp_get_soc_type();
+
+    if (soc_type == ROCKCHIP_SOC_RK3588 || soc_type == ROCKCHIP_SOC_RK3576) {
         if (coding == MPP_VIDEO_CodingAVC || coding == MPP_VIDEO_CodingHEVC)
             return 2;
-
-        if (coding == MPP_VIDEO_CodingMJPEG)
+        if (coding == MPP_VIDEO_CodingMJPEG && soc_type == ROCKCHIP_SOC_RK3588)
             return 4;
     }
 
-    mpp_log("Only rk3588 h264/jpeg encoder can use frame parallel\n");
+    mpp_log("Only rk3588's h264/265/jpeg and rk3576's h264/265 encoder can use frame parallel\n");
 
     return 1;
 }
@@ -195,10 +208,8 @@ MPP_RET Mpp::init(MppCtxType type, MppCodingType coding)
     case MPP_CTX_ENC : {
         RK_S32 input_task_count = 1;
 
-        mPktIn  = new mpp_list(list_wraper_packet);
         mPktOut = new mpp_list(list_wraper_packet);
-        mFrmIn  = new mpp_list(NULL);
-        mFrmOut = new mpp_list(NULL);
+        mFrmIn  = new mpp_list(list_wraper_frame);
 
         if (mInputTimeout == MPP_POLL_BUTT)
             mInputTimeout = MPP_POLL_BLOCK;
@@ -565,8 +576,12 @@ MPP_RET Mpp::decode(MppPacket packet, MppFrame *frame)
         AutoMutex autoFrameLock(mFrmOut->mutex());
 
         if (mFrmOut->list_size()) {
+            MppBuffer buffer;
+
             mFrmOut->del_at_head(frame, sizeof(*frame));
-            mpp_buffer_sync_ro_begin(mpp_frame_get_buffer(*frame));
+            buffer = mpp_frame_get_buffer(*frame);
+            if (buffer)
+                mpp_buffer_sync_ro_begin(buffer);
             mFrameGetCount++;
             return MPP_OK;
         }
@@ -585,8 +600,12 @@ MPP_RET Mpp::decode(MppPacket packet, MppFrame *frame)
             AutoMutex autoFrameLock(mFrmOut->mutex());
 
             if (mFrmOut->list_size()) {
+                MppBuffer buffer;
+
                 mFrmOut->del_at_head(frame, sizeof(*frame));
-                mpp_buffer_sync_ro_begin(mpp_frame_get_buffer(*frame));
+                buffer = mpp_frame_get_buffer(*frame);
+                if (buffer)
+                    mpp_buffer_sync_ro_begin(buffer);
                 mFrameGetCount++;
                 frm_rdy = 1;
             }
@@ -619,6 +638,8 @@ MPP_RET Mpp::put_frame(MppFrame frame)
 {
     if (!mInitDone)
         return MPP_ERR_INIT;
+
+    mpp_dbg_pts("%p input frame pts %lld\n", this, mpp_frame_get_pts(frame));
 
     if (mInputTimeout == MPP_POLL_NON_BLOCK) {
         set_io_mode(MPP_IO_MODE_NORMAL);
@@ -778,7 +799,7 @@ MPP_RET Mpp::get_packet(MppPacket *packet)
 
         mpp_buffer_sync_ro_partial_begin(buf, offset, impl->length);
 
-        mpp_dbg_pts("pts %lld\n", impl->pts);
+        mpp_dbg_pts("%p output packet pts %lld\n", this, impl->pts);
     }
 
     // dump output
@@ -842,12 +863,18 @@ MPP_RET Mpp::get_packet_async(MppPacket *packet)
 
     if (mPktOut->list_size()) {
         MppPacket pkt = NULL;
+        MppPacketImpl *impl = NULL;
+        RK_U32 offset;
 
         mPktOut->del_at_head(&pkt, sizeof(pkt));
         mPacketGetCount++;
         notify(MPP_OUTPUT_DEQUEUE);
 
         *packet = pkt;
+
+        impl = (MppPacketImpl *)pkt;
+        offset = (RK_U32)((char *)impl->pos - (char *)impl->data);
+        mpp_buffer_sync_ro_partial_begin(impl->buffer, offset, impl->length);
     } else {
         AutoMutex autoFrameLock(mFrmIn->mutex());
 
@@ -1169,6 +1196,7 @@ MPP_RET Mpp::control_dec(MpiCmd cmd, MppParam param)
     MPP_RET ret = MPP_NOK;
 
     switch (cmd) {
+    case MPP_DEC_GET_THUMBNAIL_FRAME_INFO:
     case MPP_DEC_SET_FRAME_INFO: {
         ret = mpp_dec_control(mDec, cmd, param);
     } break;
@@ -1242,7 +1270,8 @@ MPP_RET Mpp::control_dec(MpiCmd cmd, MppParam param)
     case MPP_DEC_SET_DISABLE_ERROR :
     case MPP_DEC_SET_ENABLE_DEINTERLACE :
     case MPP_DEC_SET_ENABLE_FAST_PLAY :
-    case MPP_DEC_SET_ENABLE_MVC: {
+    case MPP_DEC_SET_ENABLE_MVC :
+    case MPP_DEC_SET_DISABLE_DPB_CHECK: {
         /*
          * These control may be set before mpp_init
          * When this case happen record the config and wait for decoder init

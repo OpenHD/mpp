@@ -210,25 +210,6 @@ MPP_RET hal_h265d_rkv_init(void *hal, MppHalCfg *cfg)
         return ret;
     }
 
-
-    {
-        // report hw_info to parser
-        const MppSocInfo *info = mpp_get_soc_info();
-        const void *hw_info = NULL;
-        RK_U32 i = 0;
-
-        for (i = 0; i < MPP_ARRAY_ELEMS(info->dec_caps); i++) {
-            if (info->dec_caps[i] && ( info->dec_caps[i]->type == VPU_CLIENT_RKVDEC ||
-                                       info->dec_caps[i]->type == VPU_CLIENT_HEVC_DEC)) {
-                hw_info = info->dec_caps[i];
-                break;
-            }
-        }
-
-        mpp_assert(hw_info);
-        cfg->hw_info = hw_info;
-    }
-
 #ifdef dump
     fp = fopen("/data/hal.bin", "wb");
 #endif
@@ -786,6 +767,8 @@ MPP_RET hal_h265d_rkv_gen_regs(void *hal,  HalTaskInfo *syn)
             mpp_err("hevc rps buf all used");
             return MPP_ERR_NOMEM;
         }
+    } else {
+        syn->dec.reg_index = 0;
     }
     rps_ptr = mpp_buffer_get_ptr(reg_ctx->rps_data);
     if (NULL == rps_ptr) {
@@ -958,7 +941,8 @@ MPP_RET hal_h265d_rkv_start(void *hal, HalTaskInfo *task)
     do {
         MppDevRegWrCfg wr_cfg;
         MppDevRegRdCfg rd_cfg;
-        RK_U32 reg_size = (reg_ctx->is_v345) ? V345_HEVC_REGISTERS :
+
+        RK_U32 reg_size = (reg_ctx->is_v341 || reg_ctx->is_v345) ? V345_HEVC_REGISTERS :
                           (reg_ctx->client_type == VPU_CLIENT_RKVDEC) ?
                           RKVDEC_V1_REGISTERS : RKVDEC_HEVC_REGISTERS;
 
@@ -1007,16 +991,16 @@ MPP_RET hal_h265d_rkv_wait(void *hal, HalTaskInfo *task)
     H265d_REGS_t *hw_regs = NULL;
     RK_S32 i;
 
-    if (task->dec.flags.parse_err ||
-        task->dec.flags.ref_err) {
-        h265h_dbg(H265H_DBG_TASK_ERR, "%s found task error\n", __FUNCTION__);
-        goto ERR_PROC;
-    }
-
     if (reg_ctx->fast_mode) {
         hw_regs = ( H265d_REGS_t *)reg_ctx->g_buf[index].hw_regs;
     } else {
         hw_regs = ( H265d_REGS_t *)reg_ctx->hw_regs;
+    }
+
+    if (task->dec.flags.parse_err ||
+        task->dec.flags.ref_err) {
+        h265h_dbg(H265H_DBG_TASK_ERR, "%s found task error\n", __FUNCTION__);
+        goto ERR_PROC;
     }
 
     ret = mpp_dev_ioctl(reg_ctx->dev, MPP_DEV_CMD_POLL, NULL);

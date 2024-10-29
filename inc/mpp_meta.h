@@ -80,6 +80,7 @@ typedef enum MppMetaKey_e {
     KEY_LONG_REF_IDX            = FOURCC_META('l', 't', 'i', 'd'),
     KEY_ENC_AVERAGE_QP          = FOURCC_META('a', 'v', 'g', 'q'),
     KEY_ENC_START_QP            = FOURCC_META('s', 't', 'r', 'q'),
+    KEY_ENC_BPS_RT              = FOURCC_META('r', 't', 'b', 'r'),   /* realtime bps */
     KEY_ROI_DATA                = FOURCC_META('r', 'o', 'i', ' '),
     KEY_OSD_DATA                = FOURCC_META('o', 's', 'd', ' '),
     KEY_OSD_DATA2               = FOURCC_META('o', 's', 'd', '2'),
@@ -98,6 +99,8 @@ typedef enum MppMetaKey_e {
     KEY_LVL4_INTRA_NUM          = FOURCC_META('l', '4', 'i', ' '),
     /* output P skip frame indicator */
     KEY_OUTPUT_PSKIP            = FOURCC_META('o', 'p', 's', 'p'),
+    /* input P skip frame request */
+    KEY_INPUT_PSKIP             = FOURCC_META('i', 'p', 's', 'p'),
     KEY_ENC_SSE                 = FOURCC_META('e', 's', 's', 'e'),
 
     /*

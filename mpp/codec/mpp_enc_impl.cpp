@@ -21,8 +21,11 @@
 #include <limits.h>
 
 #include "mpp_time.h"
+#include "mpp_mem.h"
 #include "mpp_common.h"
+#include "mpp_buffer_impl.h"
 
+#include "mpp_enc_refs.h"
 #include "mpp_frame_impl.h"
 #include "mpp_packet_impl.h"
 
@@ -82,6 +85,7 @@ RK_U8 uuid_refresh_cfg[16] = {
     0x5f, 0x70, 0x6f, 0x69, 0x6e, 0x74, 0x00, 0x00
 };
 
+static MPP_RET enc_async_wait_task(MppEncImpl *enc, EncAsyncTaskInfo *info);
 static void reset_hal_enc_task(HalEncTask *task)
 {
     memset(task, 0, sizeof(*task));
@@ -262,8 +266,7 @@ static RK_S32 check_resend_hdr(MpiCmd cmd, void *param, MppEncCfgSet *cfg)
         "set cfg change codec",
     };
 
-    if (cfg->codec.coding == MPP_VIDEO_CodingMJPEG ||
-        cfg->codec.coding == MPP_VIDEO_CodingVP8)
+    if (cfg->codec.coding == MPP_VIDEO_CodingMJPEG)
         return 0;
 
     do {
@@ -561,13 +564,13 @@ MPP_RET mpp_enc_proc_rc_cfg(MppCodingType coding, MppEncRcCfg *dst, MppEncRcCfg 
         if (change & MPP_ENC_RC_CFG_CHANGE_FPS_IN) {
             dst->fps_in_flex = src->fps_in_flex;
             dst->fps_in_num = src->fps_in_num;
-            dst->fps_in_denorm = src->fps_in_denorm;
+            dst->fps_in_denom = src->fps_in_denom;
         }
 
         if (change & MPP_ENC_RC_CFG_CHANGE_FPS_OUT) {
             dst->fps_out_flex = src->fps_out_flex;
             dst->fps_out_num = src->fps_out_num;
-            dst->fps_out_denorm = src->fps_out_denorm;
+            dst->fps_out_denom = src->fps_out_denom;
         }
 
         if (change & MPP_ENC_RC_CFG_CHANGE_GOP) {
@@ -680,6 +683,9 @@ MPP_RET mpp_enc_proc_rc_cfg(MppCodingType coding, MppEncRcCfg *dst, MppEncRcCfg 
             dst->refresh_num = src->refresh_num;
         }
 
+        if (change & MPP_ENC_RC_CFG_CHANGE_QPDD)
+            dst->cu_qp_delta_depth = src->cu_qp_delta_depth;
+
         // parameter checking
         if (dst->rc_mode >= MPP_ENC_RC_MODE_BUTT) {
             mpp_err("invalid rc mode %d should be RC_MODE_VBR or RC_MODE_CBR\n",
@@ -714,11 +720,11 @@ MPP_RET mpp_enc_proc_rc_cfg(MppCodingType coding, MppEncRcCfg *dst, MppEncRcCfg 
             }
         }
 
-        if (dst->fps_in_num < 0 || dst->fps_in_denorm < 0 ||
-            dst->fps_out_num < 0 || dst->fps_out_denorm < 0) {
-            mpp_err("invalid fps cfg [number:denorm:flex]: in [%d:%d:%d] out [%d:%d:%d]\n",
-                    dst->fps_in_num, dst->fps_in_denorm, dst->fps_in_flex,
-                    dst->fps_out_num, dst->fps_out_denorm, dst->fps_out_flex);
+        if (dst->fps_in_num < 0 || dst->fps_in_denom < 0 ||
+            dst->fps_out_num < 0 || dst->fps_out_denom < 0) {
+            mpp_err("invalid fps cfg [number:denom:flex]: in [%d:%d:%d] out [%d:%d:%d]\n",
+                    dst->fps_in_num, dst->fps_in_denom, dst->fps_in_flex,
+                    dst->fps_out_num, dst->fps_out_denom, dst->fps_out_flex);
             ret = MPP_ERR_VALUE;
         }
 
@@ -858,8 +864,99 @@ MPP_RET mpp_enc_proc_tune_cfg(MppEncFineTuneCfg *dst, MppEncFineTuneCfg *src)
 
         if (dst->scene_mode < MPP_ENC_SCENE_MODE_DEFAULT ||
             dst->scene_mode >= MPP_ENC_SCENE_MODE_BUTT) {
-            mpp_err("invalid scene mode %d not in range [%d:%d]\n", dst->scene_mode,
+            mpp_err("invalid scene mode %d not in range [%d, %d]\n", dst->scene_mode,
                     MPP_ENC_SCENE_MODE_DEFAULT, MPP_ENC_SCENE_MODE_BUTT - 1);
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_DEBLUR_EN)
+            dst->deblur_en = src->deblur_en;
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_DEBLUR_STR)
+            dst->deblur_str = src->deblur_str;
+
+        if (dst->deblur_str < 0 || dst->deblur_str > 7) {
+            mpp_err("invalid deblur strength not in range [0, 7]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_ANTI_FLICKER_STR)
+            dst->anti_flicker_str = src->anti_flicker_str;
+
+        if (dst->anti_flicker_str < 0 || dst->anti_flicker_str > 3) {
+            mpp_err("invalid anti_flicker_str not in range [0 : 3]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_ATR_STR_I)
+            dst->atr_str_i = src->atr_str_i;
+
+        if (dst->atr_str_i < 0 || dst->atr_str_i > 3) {
+            mpp_err("invalid atr_str not in range [0 : 3]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_ATR_STR_P)
+            dst->atr_str_p = src->atr_str_p;
+
+        if (dst->atr_str_p < 0 || dst->atr_str_p > 3) {
+            mpp_err("invalid atr_str not in range [0 : 3]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_ATL_STR)
+            dst->atl_str = src->atl_str;
+
+        if (dst->atl_str < 0 || dst->atl_str > 3) {
+            mpp_err("invalid atr_str not in range [0 : 3]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_SAO_STR_I)
+            dst->sao_str_i = src->sao_str_i;
+
+        if (dst->sao_str_i < 0 || dst->sao_str_i > 3) {
+            mpp_err("invalid atr_str not in range [0 : 3]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_SAO_STR_P)
+            dst->sao_str_p = src->sao_str_p;
+
+        if (dst->sao_str_p < 0 || dst->sao_str_p > 3) {
+            mpp_err("invalid atr_str not in range [0 : 3]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_LAMBDA_IDX_I)
+            dst->lambda_idx_i = src->lambda_idx_i;
+
+        if (dst->lambda_idx_i < 0 || dst->lambda_idx_i > 8) {
+            mpp_err("invalid lambda idx i not in range [0, 8]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_LAMBDA_IDX_P)
+            dst->lambda_idx_p = src->lambda_idx_p;
+
+        if (dst->lambda_idx_p < 0 || dst->lambda_idx_p > 8) {
+            mpp_err("invalid lambda idx i not in range [0, 8]\n");
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_RC_CONTAINER)
+            dst->rc_container = src->rc_container;
+
+        if (dst->rc_container < 0 || dst->rc_container > 2) {
+            mpp_err("invalid rc_container %d not in range [0, 2]\n", dst->rc_container);
+            ret = MPP_ERR_VALUE;
+        }
+
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_VMAF_OPT)
+            dst->vmaf_opt = src->vmaf_opt;
+
+        if (dst->vmaf_opt < 0 || dst->vmaf_opt > 1) {
+            mpp_err("invalid vmaf_opt %d not in range [0, 1]\n", dst->vmaf_opt);
             ret = MPP_ERR_VALUE;
         }
 
@@ -1132,6 +1229,7 @@ static const char *name_of_rc_mode[] = {
     "cbr",
     "fixqp",
     "avbr",
+    "smtrc"
 };
 
 static void update_rc_cfg_log(MppEncImpl *impl, const char* fmt, ...)
@@ -1217,6 +1315,9 @@ static void set_rc_cfg(RcCfg *cfg, MppEncCfgSet *cfg_set)
     case MPP_ENC_RC_MODE_FIXQP: {
         cfg->mode = RC_FIXQP;
     } break;
+    case MPP_ENC_RC_MODE_SMTRC: {
+        cfg->mode = RC_SMT;
+    } break;
     default : {
         cfg->mode = RC_AVBR;
     } break;
@@ -1224,10 +1325,10 @@ static void set_rc_cfg(RcCfg *cfg, MppEncCfgSet *cfg_set)
 
     cfg->fps.fps_in_flex    = rc->fps_in_flex;
     cfg->fps.fps_in_num     = rc->fps_in_num;
-    cfg->fps.fps_in_denorm  = rc->fps_in_denorm;
+    cfg->fps.fps_in_denom  = rc->fps_in_denom;
     cfg->fps.fps_out_flex   = rc->fps_out_flex;
     cfg->fps.fps_out_num    = rc->fps_out_num;
-    cfg->fps.fps_out_denorm = rc->fps_out_denorm;
+    cfg->fps.fps_out_denom = rc->fps_out_denom;
     cfg->igop               = rc->gop;
     cfg->max_i_bit_prop     = rc->max_i_prop;
     cfg->min_i_bit_prop     = rc->min_i_prop;
@@ -1237,6 +1338,7 @@ static void set_rc_cfg(RcCfg *cfg, MppEncCfgSet *cfg_set)
     cfg->bps_max    = rc->bps_max;
     cfg->bps_min    = rc->bps_min;
     cfg->scene_mode = cfg_set->tune.scene_mode;
+    cfg->rc_container = cfg_set->tune.rc_container;
 
     cfg->hier_qp_cfg.hier_qp_en = rc->hier_qp_en;
     memcpy(cfg->hier_qp_cfg.hier_frame_num, rc->hier_frame_num, sizeof(rc->hier_frame_num));
@@ -1303,7 +1405,7 @@ static void set_rc_cfg(RcCfg *cfg, MppEncCfgSet *cfg_set)
 
     if (info->st_gop) {
         cfg->vgop = info->st_gop;
-        if (cfg->vgop >= rc->fps_out_num / rc->fps_out_denorm &&
+        if (cfg->vgop >= rc->fps_out_num / rc->fps_out_denom &&
             cfg->vgop < cfg->igop ) {
             cfg->gop_mode = SMART_P;
             if (!cfg->vi_quality_delta)
@@ -1317,9 +1419,9 @@ static void set_rc_cfg(RcCfg *cfg, MppEncCfgSet *cfg_set)
                 name_of_rc_mode[cfg->mode],
                 rc->bps_min, rc->bps_target, rc->bps_max,
                 cfg->fps.fps_in_flex ? "flex" : "fix",
-                cfg->fps.fps_in_num, cfg->fps.fps_in_denorm,
+                cfg->fps.fps_in_num, cfg->fps.fps_in_denom,
                 cfg->fps.fps_out_flex ? "flex" : "fix",
-                cfg->fps.fps_out_num, cfg->fps.fps_out_denorm,
+                cfg->fps.fps_out_num, cfg->fps.fps_out_denom,
                 cfg->igop, cfg->vgop);
     }
 }
@@ -1437,6 +1539,7 @@ static MPP_RET mpp_enc_check_pkt_buf(MppEncImpl *enc)
 
         mpp_assert(size);
         mpp_buffer_get(mpp->mPacketGroup, &buffer, size);
+        mpp_buffer_attach_dev(buffer, enc->dev);
         mpp_assert(buffer);
         enc->pkt_buf = buffer;
         pkt->data   = mpp_buffer_get_ptr(buffer);
@@ -1526,6 +1629,86 @@ static void mpp_enc_rc_info_backup(MppEncImpl *enc, EncAsyncTaskInfo *task)
     enc->rc_info_prev = task->rc.info;
 }
 
+static MPP_RET mpp_enc_force_pskip_check(Mpp *mpp, EncAsyncTaskInfo *task)
+{
+    MppEncImpl *enc = (MppEncImpl *)mpp->mEnc;
+    EncRcTask *rc_task = &task->rc;
+    EncCpbStatus *cpb = &rc_task->cpb;
+    EncFrmStatus *frm = &rc_task->frm;
+    MppEncCpbInfo cpb_info;
+    RK_U32 max_tid = 0;
+    MPP_RET ret = MPP_OK;
+
+    mpp_enc_refs_get_cpb_info(enc->refs, &cpb_info);
+    max_tid = cpb_info.max_st_tid;
+
+    if (frm->is_idr) {
+        enc_dbg_detail("task %d, IDR frames should not be set as pskip frames", frm->seq_idx);
+        ret = MPP_NOK;
+    }
+    if (frm->is_lt_ref) {
+        enc_dbg_detail("task %d, LTR frames should not be set as pskip frames", frm->seq_idx);
+        ret = MPP_NOK;
+    }
+    if (cpb->curr.temporal_id != max_tid) {
+        enc_dbg_detail("task %d, Only top-layer frames can be set as pskip frames in TSVC mode", frm->seq_idx);
+        ret = MPP_NOK;
+    }
+    if (cpb->curr.ref_mode != REF_TO_PREV_REF_FRM) {
+        enc_dbg_detail("task %d, Only frames with reference mode set to prev_ref can be set as pskip frames", frm->seq_idx);
+        ret = MPP_NOK;
+    }
+
+    return ret;
+}
+
+static MPP_RET mpp_enc_force_pskip(Mpp *mpp, EncAsyncTaskInfo *task)
+{
+    MppEncImpl *enc = (MppEncImpl *)mpp->mEnc;
+    EncImpl impl = enc->impl;
+    MppEncRefFrmUsrCfg *frm_cfg = &task->usr;
+    EncRcTask *rc_task = &task->rc;
+    EncCpbStatus *cpb = &rc_task->cpb;
+    EncFrmStatus *frm = &rc_task->frm;
+    HalEncTask *hal_task = &task->task;
+    MPP_RET ret = MPP_OK;
+
+    enc_dbg_func("enter\n");
+
+    frm_cfg->force_pskip++;
+    frm_cfg->force_flag |= ENC_FORCE_PSKIP;
+
+    /* NOTE: in some condition the pskip should not happen */
+    mpp_enc_refs_set_usr_cfg(enc->refs, frm_cfg);
+
+    enc_dbg_detail("task %d enc proc dpb\n", frm->seq_idx);
+    mpp_enc_refs_get_cpb(enc->refs, cpb);
+
+    enc_dbg_frm_status("frm %d start ***********************************\n", cpb->curr.seq_idx);
+    ENC_RUN_FUNC2(enc_impl_proc_dpb, impl, hal_task, mpp, ret);
+
+    ret = mpp_enc_force_pskip_check(mpp, task);
+    if (ret) {
+        mpp_enc_refs_rollback(enc->refs);
+        frm_cfg->force_pskip--;
+        frm_cfg->force_flag &= ~ENC_FORCE_PSKIP;
+        return MPP_NOK;
+    }
+
+    enc_dbg_detail("task %d rc frame start\n", frm->seq_idx);
+    ENC_RUN_FUNC2(rc_frm_start, enc->rc_ctx, rc_task, mpp, ret);
+
+    enc_dbg_detail("task %d enc sw enc start\n", frm->seq_idx);
+    ENC_RUN_FUNC2(enc_impl_sw_enc, impl, hal_task, mpp, ret);
+
+    enc_dbg_detail("task %d rc frame end\n", frm->seq_idx);
+    ENC_RUN_FUNC2(rc_frm_end, enc->rc_ctx, rc_task, mpp, ret);
+
+TASK_DONE:
+    enc_dbg_func("leave\n");
+    return ret;
+}
+
 static void mpp_enc_add_sw_header(MppEncImpl *enc, HalEncTask *hal_task)
 {
     EncImpl impl = enc->impl;
@@ -1610,11 +1793,33 @@ static MPP_RET mpp_enc_normal(Mpp *mpp, EncAsyncTaskInfo *task)
     EncFrmStatus *frm = &rc_task->frm;
     HalEncTask *hal_task = &task->task;
     MPP_RET ret = MPP_OK;
+    EncAsyncStatus *status = &task->status;
 
     if (enc->support_hw_deflicker && enc->cfg.rc.debreath_en) {
         ret = mpp_enc_proc_two_pass(mpp, task);
         if (ret)
             return ret;
+    }
+
+    enc_dbg_detail("task %d check force pskip start\n", frm->seq_idx);
+    if (!status->check_frm_pskip) {
+        RK_S32 force_pskip = 0;
+        status->check_frm_pskip = 1;
+
+        if (mpp_frame_has_meta(enc->frame)) {
+            MppMeta frm_meta = mpp_frame_get_meta(enc->frame);
+            if (frm_meta)
+                mpp_meta_get_s32(frm_meta, KEY_INPUT_PSKIP, &force_pskip);
+        }
+
+        if (force_pskip == 1) {
+            frm->force_pskip = 1;
+            ret = mpp_enc_force_pskip((Mpp*)enc->mpp, task);
+            if (ret)
+                enc_dbg_detail("task %d set force pskip failed.", frm->seq_idx);
+            else
+                goto TASK_DONE;
+        }
     }
 
     enc_dbg_detail("task %d enc proc dpb\n", frm->seq_idx);
@@ -2031,6 +2236,27 @@ static MPP_RET try_proc_low_deley_task(Mpp *mpp, EncAsyncTaskInfo *task, EncAsyn
     if (status->low_delay_again)
         goto GET_OUTPUT_TASK;
 
+    enc_dbg_detail("task %d check force pskip start\n", frm->seq_idx);
+    if (!status->check_frm_pskip) {
+        RK_S32 force_pskip = 0;
+        status->check_frm_pskip = 1;
+
+        if (mpp_frame_has_meta(enc->frame)) {
+            MppMeta frm_meta = mpp_frame_get_meta(enc->frame);
+            if (frm_meta)
+                mpp_meta_get_s32(frm_meta, KEY_INPUT_PSKIP, &force_pskip);
+        }
+
+        if (force_pskip == 1) {
+            frm->force_pskip = 1;
+            ret = mpp_enc_force_pskip((Mpp*)enc->mpp, task);
+            if (ret)
+                enc_dbg_detail("task %d set force pskip failed.", frm->seq_idx);
+            else
+                goto TASK_DONE;
+        }
+    }
+
     enc_dbg_detail("task %d enc proc dpb\n", frm->seq_idx);
     mpp_enc_refs_get_cpb(enc->refs, cpb);
 
@@ -2232,6 +2458,10 @@ static MPP_RET set_enc_info_to_packet(MppEncImpl *enc, HalEncTask *hal_task)
         /* frame type */
         mpp_meta_set_s32(meta, KEY_OUTPUT_INTRA,    frm->is_intra);
         mpp_meta_set_s32(meta, KEY_OUTPUT_PSKIP,    frm->force_pskip || is_pskip);
+        mpp_meta_set_s32(meta, KEY_ENC_BPS_RT, rc_task->info.rt_bits);
+
+        if (rc_task->info.frame_type == INTER_VI_FRAME)
+            mpp_meta_set_s32(meta, KEY_ENC_USE_LTR, rc_task->cpb.refr.lt_idx);
     }
     /* start qp and average qp */
     mpp_meta_set_s32(meta, KEY_ENC_START_QP,    rc_task->info.quality_target);
@@ -2598,6 +2828,7 @@ static MPP_RET check_async_pkt_buf(MppEncImpl *enc, EncAsyncTaskInfo *async)
 
         mpp_assert(size);
         mpp_buffer_get(mpp->mPacketGroup, &buffer, size);
+        mpp_buffer_attach_dev(buffer, enc->dev);
         mpp_assert(buffer);
         enc->pkt_buf = buffer;
         pkt->data   = mpp_buffer_get_ptr(buffer);
@@ -2835,7 +3066,28 @@ TASK_DONE:
     return ret;
 }
 
-static MPP_RET proc_async_task(MppEncImpl *enc)
+static MPP_RET try_proc_processing_task(MppEncImpl *enc, EncAsyncWait *wait)
+{
+    HalTaskHnd hnd = NULL;
+    EncAsyncTaskInfo *info = NULL;
+    MPP_RET ret = MPP_NOK;
+
+    ret = hal_task_get_hnd(enc->tasks, TASK_PROCESSING, &hnd);
+    if (ret)
+        return ret;
+
+    info = (EncAsyncTaskInfo *)hal_task_hnd_get_data(hnd);
+
+    mpp_assert(!info->status.enc_done);
+
+    enc_async_wait_task(enc, info);
+    hal_task_hnd_set_status(hnd, TASK_IDLE);
+    wait->task_hnd = 0;
+
+    return MPP_OK;
+}
+
+static MPP_RET proc_async_task(MppEncImpl *enc, EncAsyncWait *wait)
 {
     Mpp *mpp = (Mpp*)enc->mpp;
     EncImpl impl = enc->impl;
@@ -2853,6 +3105,40 @@ static MPP_RET proc_async_task(MppEncImpl *enc)
 
     if (hal_task->flags.drop_by_fps)
         goto SEND_TASK_INFO;
+
+    if (!status->check_frm_pskip) {
+        RK_S32 force_pskip = 0;
+        status->check_frm_pskip = 1;
+
+        if (mpp_frame_has_meta(hal_task->frame)) {
+            MppMeta frm_meta = mpp_frame_get_meta(hal_task->frame);
+            if (frm_meta)
+                mpp_meta_get_s32(frm_meta, KEY_INPUT_PSKIP, &force_pskip);
+        }
+
+        if (force_pskip == 1) {
+            frm->force_pskip = 1;
+            ret = mpp_enc_force_pskip((Mpp*)enc->mpp, async);
+
+            if (ret)
+                enc_dbg_detail("task %d set force pskip failed.", frm->seq_idx);
+            else
+                goto SEND_TASK_INFO;
+        }
+    }
+
+    if (enc->support_hw_deflicker && enc->cfg.rc.debreath_en) {
+        bool two_pass_en = mpp_enc_refs_next_frm_is_intra(enc->refs);
+
+        if (two_pass_en) {
+            /* wait all tasks done */
+            while (MPP_OK == try_proc_processing_task(enc, wait));
+
+            ret = mpp_enc_proc_two_pass(mpp, async);
+            if (ret)
+                return ret;
+        }
+    }
 
     enc_dbg_detail("task %d enc proc dpb\n", seq_idx);
     mpp_enc_refs_get_cpb(enc->refs, cpb);
@@ -2949,7 +3235,7 @@ static MPP_RET enc_async_wait_task(MppEncImpl *enc, EncAsyncTaskInfo *info)
     MppPacket pkt = hal_task->packet;
     MPP_RET ret = MPP_OK;
 
-    if (hal_task->flags.drop_by_fps)
+    if (hal_task->flags.drop_by_fps || hal_task->frm_cfg->force_pskip)
         goto TASK_DONE;
 
     enc_dbg_detail("task %d hal wait\n", frm->seq_idx);
@@ -3040,8 +3326,6 @@ void *mpp_enc_async_thread(void *data)
         // 1. process user control and reset flag
         if (enc->cmd_send != enc->cmd_recv || enc->reset_flag) {
             mpp_list *frm_in = mpp->mFrmIn;
-            HalTaskHnd hnd = NULL;
-            EncAsyncTaskInfo *info = NULL;
 
             /* when process cmd or reset hold frame input */
             frm_in->lock();
@@ -3049,15 +3333,7 @@ void *mpp_enc_async_thread(void *data)
             enc_dbg_detail("ctrl proc %d cmd %08x\n", enc->cmd_recv, enc->cmd);
 
             // wait all tasks done
-            while (MPP_OK == hal_task_get_hnd(enc->tasks, TASK_PROCESSING, &hnd)) {
-                info = (EncAsyncTaskInfo *)hal_task_hnd_get_data(hnd);
-
-                mpp_assert(!info->status.enc_done);
-
-                enc_async_wait_task(enc, info);
-                hal_task_hnd_set_status(hnd, TASK_IDLE);
-                wait.task_hnd = 0;
-            }
+            while (MPP_OK == try_proc_processing_task(enc, &wait));
 
             if (enc->cmd_send != enc->cmd_recv) {
                 sem_wait(&enc->cmd_start);
@@ -3111,28 +3387,17 @@ void *mpp_enc_async_thread(void *data)
         ret = try_get_async_task(enc, &wait);
         enc_dbg_detail("try_get_async_task ret %d\n", ret);
         if (ret) {
-            HalTaskHnd hnd = NULL;
-            EncAsyncTaskInfo *info = NULL;
-
-            hal_task_get_hnd(enc->tasks, TASK_PROCESSING, &hnd);
-            if (hnd) {
-                info = (EncAsyncTaskInfo *)hal_task_hnd_get_data(hnd);
-
-                mpp_assert(!info->status.enc_done);
-
-                enc_async_wait_task(enc, info);
-                hal_task_hnd_set_status(hnd, TASK_IDLE);
-                wait.task_hnd = 0;
-            }
-
+            try_proc_processing_task(enc, &wait);
             continue;
         }
 
         mpp_assert(enc->async);
         mpp_assert(enc->async->task.valid);
 
-        proc_async_task(enc);
+        proc_async_task(enc, &wait);
     }
+    /* wait all task done */
+    while (MPP_OK == try_proc_processing_task(enc, &wait));
 
     enc_dbg_func("thread finish\n");
 

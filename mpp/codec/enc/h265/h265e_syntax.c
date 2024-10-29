@@ -120,11 +120,11 @@ static void fill_picture_parameters(const H265eCtx *h,
         pp->num_tile_columns_minus1 = pps->m_nNumTileColumnsMinus1;
         pp->num_tile_rows_minus1 = pps->m_nNumTileRowsMinus1;
 
-        for (i = 0; i < pp->num_tile_columns_minus1; i++)
-            pp->column_width_minus1[i] = pps->m_nTileColumnWidthArray[i];
+        for (i = 0; i <= pp->num_tile_columns_minus1; i++)
+            pp->column_width_minus1[i] = pps->m_nTileColumnWidthArray[i] - 1;
 
-        for (i = 0; i < pp->num_tile_rows_minus1; i++)
-            pp->row_height_minus1[i] = pps->m_nTileRowHeightArray[i];
+        for (i = 0; i <= pp->num_tile_rows_minus1; i++)
+            pp->row_height_minus1[i] = pps->m_nTileRowHeightArray[i] - 1;
     }
 }
 
@@ -146,8 +146,6 @@ static void fill_slice_parameters( const H265eCtx *h,
         sp->sli_max_num_m1 = 50;
         sp->sli_flsh = 1;
     }
-
-
 
     sp->cbc_init_flg        = slice->m_cabacInitFlag;
     sp->mvd_l1_zero_flg     = slice->m_bLMvdL1Zero;
@@ -181,6 +179,7 @@ static void fill_slice_parameters( const H265eCtx *h,
     sp->sli_cb_qp_ofst = slice->m_sliceQpDeltaCb;
     sp->sli_qp = slice->m_sliceQp;
     sp->max_mrg_cnd = slice->m_maxNumMergeCand;
+    sp->temporal_id = slice->temporal_id;
     sp->non_reference_flag = slice->m_temporalLayerNonReferenceFlag;
     sp->col_ref_idx = 0;
     sp->col_frm_l0_flg = slice->m_colFromL0Flag;
@@ -193,6 +192,7 @@ RK_S32 fill_ref_parameters(const H265eCtx *h, H265eSlicParams *sp)
 {
     H265eSlice  *slice = h->slice;
     H265eReferencePictureSet* rps = slice->m_rps;
+    H265eSyntax_new *syn = (H265eSyntax_new*)&h->syntax;
     RK_U32 numRpsCurrTempList = 0;
     RK_S32 ref_num = 0;
     H265eDpbFrm *ref_frame;
@@ -232,7 +232,6 @@ RK_S32 fill_ref_parameters(const H265eCtx *h, H265eSlicParams *sp)
     if (slice->m_sps->m_bLongTermRefsPresent) {
         RK_S32 numLtrpInSH = rps->num_long_term_pic;
         RK_S32 numLtrpInSPS = 0;
-        RK_S32 counter = 0;
         RK_U32 poc_lsb_lt[3] = { 0, 0, 0 };
         RK_U32 used_by_lt_flg[3] = { 0, 0, 0 };
         RK_U32 dlt_poc_msb_prsnt[3] = { 0, 0, 0 };
@@ -251,11 +250,8 @@ RK_S32 fill_ref_parameters(const H265eCtx *h, H265eSlicParams *sp)
                 }
             }
 
-            if (find_flag) {
+            if (find_flag)
                 numLtrpInSPS++;
-            } else {
-                counter++;
-            }
         }
 
         numLtrpInSH -= numLtrpInSPS;
@@ -344,11 +340,15 @@ RK_S32 fill_ref_parameters(const H265eCtx *h, H265eSlicParams *sp)
 
     sp->recon_pic.slot_idx = h->dpb->curr->slot_idx;
     ref_frame = slice->m_refPicList[0][0];
-    if (ref_frame != NULL) {
+
+    if (ref_frame) {
+        if (ref_frame->status.force_pskip)
+            ref_frame->slot_idx = syn->pre_ref_idx;
         sp->ref_pic.slot_idx = ref_frame->slot_idx;
     } else {
         sp->ref_pic.slot_idx = h->dpb->curr->slot_idx;
     }
+
     return  0;
 }
 

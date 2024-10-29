@@ -49,12 +49,14 @@ static MppMetaDef meta_defs[] = {
     {   KEY_OUTPUT_INTRA,       TYPE_S32,       },
     {   KEY_INPUT_BLOCK,        TYPE_S32,       },
     {   KEY_OUTPUT_BLOCK,       TYPE_S32,       },
+    {   KEY_INPUT_IDR_REQ,      TYPE_S32,       },
 
     /* extra information for tsvc */
     {   KEY_TEMPORAL_ID,        TYPE_S32,       },
     {   KEY_LONG_REF_IDX,       TYPE_S32,       },
     {   KEY_ENC_AVERAGE_QP,     TYPE_S32,       },
     {   KEY_ENC_START_QP,       TYPE_S32,       },
+    {   KEY_ENC_BPS_RT,         TYPE_S32,       },
 
     {   KEY_ROI_DATA,           TYPE_PTR,       },
     {   KEY_ROI_DATA2,          TYPE_PTR,       },
@@ -73,6 +75,7 @@ static MppMetaDef meta_defs[] = {
     {   KEY_LVL16_INTRA_NUM,    TYPE_S32,       },
     {   KEY_LVL8_INTRA_NUM,     TYPE_S32,       },
     {   KEY_LVL4_INTRA_NUM,     TYPE_S32,       },
+    {   KEY_INPUT_PSKIP,        TYPE_S32,       },
     {   KEY_OUTPUT_PSKIP,       TYPE_S32,       },
     {   KEY_ENC_SSE,            TYPE_S64,       },
 

@@ -125,6 +125,16 @@ const RK_U8 mpp_hevc_diag_scan8x8_y[64] = {
     5, 7, 6, 7,
 };
 
+static RK_U32 rkv_len_align_422(RK_U32 val)
+{
+    return (2 * MPP_ALIGN(val, 16));
+}
+
+static RK_U32 rkv_len_align_444(RK_U32 val)
+{
+    return (3 * MPP_ALIGN(val, 16));
+}
+
 int mpp_hevc_decode_short_term_rps(HEVCContext *s, ShortTermRPS *rps,
                                    const HEVCSPS *sps, RK_S32 is_slice_header)
 {
@@ -132,7 +142,6 @@ int mpp_hevc_decode_short_term_rps(HEVCContext *s, ShortTermRPS *rps,
     RK_U8 rps_predict = 0;
     RK_S32 delta_poc;
     RK_S32 k0 = 0;
-    RK_S32 k1 = 0;
     RK_S32 k  = 0;
     RK_S32 i;
 
@@ -185,8 +194,6 @@ int mpp_hevc_decode_short_term_rps(HEVCContext *s, ShortTermRPS *rps,
                 rps->delta_poc[k] = delta_poc;
                 if (delta_poc < 0)
                     k0++;
-                else
-                    k1++;
                 k++;
             }
         }
@@ -289,6 +296,11 @@ static RK_S32 decode_profile_tier_level(HEVCContext *s, PTLCommon *ptl)
     READ_ONEBIT(gb, &ptl->non_packed_constraint_flag);
     READ_ONEBIT(gb, &ptl->frame_only_constraint_flag);
 
+    ptl->bit_depth_constraint = (ptl->profile_idc == MPP_PROFILE_HEVC_MAIN_10) ? 10 : 8;
+    ptl->chroma_format_constraint = H265_CHROMA_420;
+    ptl->intra_constraint_flag = 0;
+    ptl->lower_bitrate_constraint_flag = 1;
+
     SKIP_BITS(gb, 16); // XXX_reserved_zero_44bits[0..15]
     SKIP_BITS(gb, 16); // XXX_reserved_zero_44bits[16..31]
     SKIP_BITS(gb, 12); // XXX_reserved_zero_44bits[32..43]
@@ -302,6 +314,7 @@ static RK_S32 parse_ptl(HEVCContext *s, PTL *ptl, int max_num_sub_layers)
     RK_S32 i;
     HEVCLocalContext *lc = s->HEVClc;
     BitReadCtx_t *gb = &lc->gb;
+
     decode_profile_tier_level(s, &ptl->general_ptl);
     READ_BITS(gb, 8, &ptl->general_ptl.level_idc);
 
@@ -1027,7 +1040,7 @@ int mpp_hevc_decode_nal_vps(HEVCContext *s)
     BitReadCtx_t *gb = &s->HEVClc->gb;
     RK_U32 vps_id = 0;
     HEVCVPS *vps = NULL;
-    RK_U8 *vps_buf = mpp_calloc(RK_U8, sizeof(HEVCVPS));
+    RK_U8 *vps_buf = mpp_mem_pool_get(s->vps_pool);
     RK_S32 value = 0;
 
     if (!vps_buf)
@@ -1143,10 +1156,10 @@ int mpp_hevc_decode_nal_vps(HEVCContext *s)
 
     if (s->vps_list[vps_id] &&
         !memcmp(s->vps_list[vps_id], vps_buf, sizeof(HEVCVPS))) {
-        mpp_free(vps_buf);
+        mpp_mem_pool_put(s->vps_pool, vps_buf);
     } else {
         if (s->vps_list[vps_id] != NULL) {
-            mpp_free(s->vps_list[vps_id]);
+            mpp_mem_pool_put(s->vps_pool, s->vps_list[vps_id]);
         }
         s->vps_list[vps_id] = vps_buf;
         s->ps_need_upate = 1;
@@ -1155,7 +1168,7 @@ int mpp_hevc_decode_nal_vps(HEVCContext *s)
     return 0;
 __BITREAD_ERR:
 err:
-    mpp_free(vps_buf);
+    mpp_mem_pool_put(s->vps_pool, vps_buf);
     return  MPP_ERR_STREAM;
 }
 
@@ -1225,18 +1238,21 @@ static RK_S32 decode_vui(HEVCContext *s, HEVCSPS *sps)
 
     READ_ONEBIT(gb, &vui->default_display_window_flag);
     if (vui->default_display_window_flag) {
-        //TODO: * 2 is only valid for 420
         READ_UE(gb, &vui->def_disp_win.left_offset);
-        vui->def_disp_win.left_offset  =  vui->def_disp_win.left_offset * 2;
-
         READ_UE(gb, &vui->def_disp_win.right_offset);
-        vui->def_disp_win.right_offset  =  vui->def_disp_win.right_offset * 2;
-
-        READ_UE(gb, &vui->def_disp_win.right_offset);
-        vui->def_disp_win.top_offset = vui->def_disp_win.top_offset * 2;
-
-        READ_UE(gb, &vui->def_disp_win.right_offset);
-        vui->def_disp_win.bottom_offset = vui->def_disp_win.bottom_offset * 2;
+        READ_UE(gb, &vui->def_disp_win.top_offset);
+        READ_UE(gb, &vui->def_disp_win.bottom_offset);
+        if (sps) {
+            if (sps->chroma_format_idc == H265_CHROMA_420) {
+                vui->def_disp_win.left_offset   *= 2;
+                vui->def_disp_win.right_offset  *= 2;
+                vui->def_disp_win.top_offset    *= 2;
+                vui->def_disp_win.bottom_offset *= 2;
+            } else if (sps->chroma_format_idc == H265_CHROMA_422) {
+                vui->def_disp_win.left_offset   *= 2;
+                vui->def_disp_win.right_offset  *= 2;
+            }
+        }
 
 #if 0
         if (s->apply_defdispwin &&
@@ -1374,7 +1390,7 @@ static int scaling_list_data(HEVCContext *s, ScalingList *sl, HEVCSPS *sps)
                 }
             }
         }
-    if (sps->chroma_format_idc == 3) {
+    if (sps->chroma_format_idc == H265_CHROMA_444) {
         for (i = 0; i < 64; i++) {
             sl->sl[3][1][i] = sl->sl[2][1][i];
             sl->sl[3][2][i] = sl->sl[2][2][i];
@@ -1448,13 +1464,8 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
     }
 
     READ_UE(gb, &sps->chroma_format_idc);
-    if (sps->chroma_format_idc != 1) {
-        mpp_err("chroma_format_idc != 1\n");
-        ret =  MPP_ERR_PROTOL;
-        goto err;
-    }
 
-    if (sps->chroma_format_idc == 3)
+    if (sps->chroma_format_idc == H265_CHROMA_444)
         READ_ONEBIT(gb, &sps->separate_colour_plane_flag);
 
     READ_UE(gb, &sps->width);
@@ -1463,32 +1474,19 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
     READ_ONEBIT(gb, &value);
 
     if (value) { // pic_conformance_flag
-        //TODO: * 2 is only valid for 420
         READ_UE(gb, &sps->pic_conf_win.left_offset);
-        sps->pic_conf_win.left_offset   = sps->pic_conf_win.left_offset * 2;
         READ_UE(gb, &sps->pic_conf_win.right_offset);
-        sps->pic_conf_win.right_offset  = sps->pic_conf_win.right_offset * 2;
         READ_UE(gb, &sps->pic_conf_win.top_offset);
-        sps->pic_conf_win.top_offset    =  sps->pic_conf_win.top_offset * 2;
         READ_UE(gb, &sps->pic_conf_win.bottom_offset);
-        sps->pic_conf_win.bottom_offset = sps->pic_conf_win.bottom_offset * 2;
-#if 0
-        if (s->h265dctx->flags2 & CODEC_FLAG2_IGNORE_CROP) {
-            h265d_dbg(H265D_DBG_SPS,
-                      "discarding sps conformance window, "
-                      "original values are l:%u r:%u t:%u b:%u\n",
-                      sps->pic_conf_win.left_offset,
-                      sps->pic_conf_win.right_offset,
-                      sps->pic_conf_win.top_offset,
-                      sps->pic_conf_win.bottom_offset);
-
-            sps->pic_conf_win.left_offset   =
-                sps->pic_conf_win.right_offset  =
-                    sps->pic_conf_win.top_offset    =
-                        sps->pic_conf_win.bottom_offset = 0;
+        if (sps->chroma_format_idc == H265_CHROMA_420) {
+            sps->pic_conf_win.left_offset   *= 2;
+            sps->pic_conf_win.right_offset  *= 2;
+            sps->pic_conf_win.top_offset    *= 2;
+            sps->pic_conf_win.bottom_offset *= 2;
+        } else if (sps->chroma_format_idc == H265_CHROMA_422) {
+            sps->pic_conf_win.left_offset   *= 2;
+            sps->pic_conf_win.right_offset  *= 2;
         }
-
-#endif
         sps->output_window = sps->pic_conf_win;
     }
 
@@ -1507,7 +1505,11 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
         goto err;
     }
 
-    if (sps->chroma_format_idc == 1) {
+    switch (sps->chroma_format_idc) {
+    case H265_CHROMA_400 : {
+        sps->pix_fmt = MPP_FMT_YUV400;
+    } break;
+    case H265_CHROMA_420 : {
         switch (sps->bit_depth) {
         case 8:  sps->pix_fmt = MPP_FMT_YUV420SP;   break;
         case 10: sps->pix_fmt = MPP_FMT_YUV420SP_10BIT; break;
@@ -1517,21 +1519,25 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
             ret =  MPP_ERR_PROTOL;
             goto err;
         }
-    } else {
-        mpp_err(
-            "non-4:2:0 support is currently unspecified.\n");
-        return  MPP_ERR_PROTOL;
-    }
-#if 0
-    desc = av_pix_fmt_desc_get(sps->pix_fmt);
-    if (!desc) {
-        goto err;
+    } break;
+    case H265_CHROMA_422 : {
+        switch (sps->bit_depth) {
+        case 8:  sps->pix_fmt = MPP_FMT_YUV422SP;   break;
+        case 10: sps->pix_fmt = MPP_FMT_YUV422SP_10BIT; break;
+        default:
+            mpp_err( "Unsupported bit depth: %d\n",
+                     sps->bit_depth);
+            ret =  MPP_ERR_PROTOL;
+            goto err;
+        }
+        mpp_slots_set_prop(s->slots, SLOTS_LEN_ALIGN, rkv_len_align_422);
+    } break;
+    case H265_CHROMA_444 : {
+        sps->pix_fmt = MPP_FMT_YUV444SP;
+        mpp_slots_set_prop(s->slots, SLOTS_LEN_ALIGN, rkv_len_align_444);
+    } break;
     }
 
-    sps->hshift[0] = sps->vshift[0] = 0;
-    sps->hshift[2] = sps->hshift[1] = desc->log2_chroma_w;
-    sps->vshift[2] = sps->vshift[1] = desc->log2_chroma_h;
-#endif
     sps->pixel_shift = sps->bit_depth > 8;
 
     READ_UE(gb, &sps->log2_max_poc_lsb);
@@ -1577,8 +1583,16 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
         }
     }
 
-    if ((s->picture_struct == MPP_PICTURE_STRUCTURE_TOP_FIELD) ||
-        (s->picture_struct == MPP_PICTURE_STRUCTURE_BOTTOM_FIELD)) {
+    /* According to T-REC-H.265 Chapter 7.4.4:
+     * If general_progressive_source_flag is equal to 0 and general_interlaced_source_flag is equal to 1, the
+     * source scan type of the pictures in the CVS should be interpreted as interlaced only.
+     * But the actual scan type is depending on encoder's behavior and out of this specification.
+     */
+    h265d_dbg(H265D_DBG_SPS, "sps progressive: %d, interlaced: %d\n",
+              sps->ptl.general_ptl.progressive_source_flag,
+              sps->ptl.general_ptl.interlaced_source_flag);
+    if (!sps->ptl.general_ptl.progressive_source_flag &&
+        sps->ptl.general_ptl.interlaced_source_flag) {
         for (i = 0; i < sps->max_sub_layers; i++) {
             sps->temporal_layer[i].num_reorder_pics += 2;
         }
@@ -1726,7 +1740,32 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
     }
 #endif
 
-    //  SKIP_BITS(gb, 1); // sps_extension_flag
+    READ_ONEBIT(gb, &sps->sps_extension_flag);
+    if (sps->sps_extension_flag) { // sps_extension_flag
+        READ_ONEBIT(gb, &sps->sps_range_extension_flag);
+        SKIP_BITS(gb, 7); //sps_extension_7bits = get_bits(gb, 7);
+        if (sps->sps_range_extension_flag) {
+            READ_ONEBIT(gb, &sps->transform_skip_rotation_enabled_flag);
+            READ_ONEBIT(gb, &sps->transform_skip_context_enabled_flag);
+            READ_ONEBIT(gb, &sps->implicit_rdpcm_enabled_flag);
+            READ_ONEBIT(gb, &sps->explicit_rdpcm_enabled_flag);
+
+            READ_ONEBIT(gb, &sps->extended_precision_processing_flag);
+            if (sps->extended_precision_processing_flag)
+                mpp_log("extended_precision_processing_flag not yet implemented\n");
+
+            READ_ONEBIT(gb, &sps->intra_smoothing_disabled_flag);
+            READ_ONEBIT(gb, &sps->high_precision_offsets_enabled_flag);
+            if (sps->high_precision_offsets_enabled_flag)
+                mpp_log("high_precision_offsets_enabled_flag not yet implemented\n");
+
+            READ_ONEBIT(gb, &sps->persistent_rice_adaptation_enabled_flag);
+
+            READ_ONEBIT(gb, &sps->cabac_bypass_alignment_enabled_flag);
+            if (sps->cabac_bypass_alignment_enabled_flag)
+                mpp_log("cabac_bypass_alignment_enabled_flag not yet implemented\n");
+        }
+    }
 
     if (s->apply_defdispwin) {
         sps->output_window.left_offset   += sps->vui.def_disp_win.left_offset;
@@ -1830,20 +1869,11 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
         }
         mpp_log("compare sps ok");
     }
-#if 0
-    if (s->h265dctx->debug & FF_DEBUG_BITSTREAM) {
-        h265d_dbg(H265D_DBG_SPS,
-                  "Parsed SPS: id %d; coded wxh: %dx%d; "
-                  "cropped wxh: %dx%d; pix_fmt: %s.\n",
-                  sps_id, sps->width, sps->height,
-                  sps->output_width, sps->output_height,
-                  av_get_pix_fmt_name(sps->pix_fmt));
-    }
-#endif
+
     /* check if this is a repeat of an already parsed SPS, then keep the
      * original one.
-     * otherwise drop all PPSes that depend on it */
-
+     * otherwise drop all PPSes that depend on it
+     */
     if (s->sps_list[sps_id] &&
         !memcmp(s->sps_list[sps_id], sps_buf, sizeof(HEVCSPS))) {
         mpp_mem_pool_put(s->sps_pool, sps_buf);
@@ -1857,7 +1887,7 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
         if (s->sps_list[sps_id] != NULL)
             mpp_mem_pool_put(s->sps_pool, s->sps_list[sps_id]);
         s->sps_list[sps_id] = sps_buf;
-        s->ps_need_upate = 1;
+        s->sps_need_upate = 1;
     }
 
     if (s->sps_list[sps_id])
@@ -1865,6 +1895,7 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
 
     return 0;
 __BITREAD_ERR:
+    ret = MPP_ERR_STREAM;
 err:
     mpp_mem_pool_put(s->sps_pool, sps_buf);
     return ret;
@@ -2193,6 +2224,7 @@ int mpp_hevc_decode_nal_pps(HEVCContext *s)
 
     return 0;
 __BITREAD_ERR:
+    ret = MPP_ERR_STREAM;
 err:
     if (pps)
         mpp_hevc_pps_free((RK_U8 *)pps);

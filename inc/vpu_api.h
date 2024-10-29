@@ -72,7 +72,8 @@ typedef enum {
     ENC_INPUT_RGB888 = 10,                    /**< 24-bit RGB           */
     ENC_INPUT_BGR888 = 11,                    /**< 24-bit RGB           */
     ENC_INPUT_RGB101010 = 12,                 /**< 30-bit RGB           */
-    ENC_INPUT_BGR101010 = 13                  /**< 30-bit RGB           */
+    ENC_INPUT_BGR101010 = 13,                 /**< 30-bit RGB           */
+    ENC_INPUT_YUV420_SEMIPLANAR_VU = 0X100    /**< YYYY... VUVUVUVU...  */
 } EncInputPictureType;
 
 typedef enum VPU_API_CMD {
@@ -105,6 +106,7 @@ typedef enum VPU_API_CMD {
     VPU_API_DEC_EN_MVC,
     VPU_API_DEC_EN_FBC_HDR_256_ODD,
     VPU_API_SET_INPUT_BLOCK,
+    VPU_API_SET_DISABLE_ERROR,
 
     /* set pkt/frm ready callback */
     VPU_API_SET_PKT_RDY_CB = 0x1100,

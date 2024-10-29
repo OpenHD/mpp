@@ -41,10 +41,20 @@ typedef struct DataCu_t {
     RK_U8   m_cuDepth[256];
     RK_U32  pixelX;
     RK_U32  pixelY;
-    RK_U32  mb_w;
-    RK_U32  mb_h;
     RK_U32  cur_addr;
+    RK_U32  tile_start_x;
+    RK_U32  tile_end_x;
+    RK_U32  tile_end_y;
 } DataCu;
+
+typedef struct TileInfo_t {
+    RK_U32 tile_start_x;
+    RK_U32 tile_end_x;
+    RK_U32 tile_start_y;
+    RK_U32 tile_end_y;
+    RK_U32 mb_total;
+    RK_U32 ctu_addr;
+} TileInfo;
 
 typedef struct H265eReferencePictureSet_e {
     RK_S32  m_deltaRIdxMinus1;
@@ -275,7 +285,7 @@ typedef struct H265eSps_e {
 
     RK_U32          m_bTemporalIdNestingFlag; // temporal_id_nesting_flag
 
-    RK_U32          m_scalingListEnabledFlag;
+    RK_U32          m_scalingListEnabledFlag; //TODO: replaced with scaling_list_mode
     RK_U32          m_scalingListPresentFlag;
     RK_U32          m_maxDecPicBuffering[MAX_SUB_LAYERS];
 
@@ -367,6 +377,8 @@ typedef struct H265eSlice_e {
 
     enum NALUnitType m_nalUnitType;       ///< Nal unit type for the slice
     SliceType        m_sliceType;
+
+    RK_S32           temporal_id;
     RK_U32           m_IsGenB;
     RK_S32           m_sliceQp;
     RK_U32           m_dependentSliceSegmentFlag;
@@ -435,6 +447,7 @@ void h265e_slice_set_ref_list(H265eDpbFrm *frame_list, H265eSlice *slice);
 void h265e_slice_set_ref_poc_list(H265eSlice *slice);
 void h265e_slice_init(void *ctx, EncFrmStatus curr);
 RK_S32 h265e_code_slice_skip_frame(void *ctx, H265eSlice *slice, RK_U8 *buf, RK_S32 len);
+H265eDpbFrm* get_lt_ref_pic(H265eDpbFrm *frame_list, H265eSlice *slice, RK_S32 poc, RK_U32 pocHasMsb);
 
 #ifdef __cplusplus
 }

@@ -321,6 +321,7 @@ const RK_U32 rkv_cabac_table_v34x[928] = {
     0x1423091d, 0x430e241d, 0x00000000, 0x00000000
 };
 
+MPP_RET vdpu34x_h264d_deinit(void *hal);
 static RK_U32 rkv_ver_align(RK_U32 val)
 {
     return MPP_ALIGN(val, 16);
@@ -746,21 +747,6 @@ MPP_RET vdpu34x_h264d_init(void *hal, MppHalCfg *cfg)
     mpp_slots_set_prop(p_hal->frame_slots, SLOTS_VER_ALIGN, rkv_ver_align);
     mpp_slots_set_prop(p_hal->frame_slots, SLOTS_LEN_ALIGN, rkv_len_align);
 
-    {
-        // report hw_info to parser
-        const MppSocInfo *info = mpp_get_soc_info();
-        const void *hw_info = NULL;
-
-        for (i = 0; i < MPP_ARRAY_ELEMS(info->dec_caps); i++) {
-            if (info->dec_caps[i] && info->dec_caps[i]->type == VPU_CLIENT_RKVDEC) {
-                hw_info = info->dec_caps[i];
-                break;
-            }
-        }
-
-        mpp_assert(hw_info);
-        cfg->hw_info = hw_info;
-    }
     if (cfg->hal_fbc_adj_cfg) {
         cfg->hal_fbc_adj_cfg->func = vdpu34x_afbc_align_calc;
         cfg->hal_fbc_adj_cfg->expand = 16;
@@ -899,21 +885,14 @@ static void hal_h264d_rcb_info_update(void *hal, Vdpu34xH264dRegSet *regs)
     }
 }
 
-MPP_RET vdpu34x_h264d_gen_regs(void *hal, HalTaskInfo *task)
+static MPP_RET vdpu34x_h264d_setup_colmv_buf(void *hal, RK_U32 width, RK_U32 height)
 {
-    MPP_RET ret = MPP_ERR_UNKNOW;
     H264dHalCtx_t *p_hal = (H264dHalCtx_t *)hal;
-    RK_S32 width = MPP_ALIGN((p_hal->pp->wFrameWidthInMbsMinus1 + 1) << 4, 64);
-    RK_S32 height = MPP_ALIGN((p_hal->pp->wFrameHeightInMbsMinus1 + 1) << 4, 64);
-    Vdpu34xH264dRegCtx *ctx = (Vdpu34xH264dRegCtx *)p_hal->reg_ctx;
-    Vdpu34xH264dRegSet *regs = ctx->regs;
-    RK_S32 mv_size = width * height / 2;
-    INP_CHECK(ret, NULL == p_hal);
+    RK_U32 ctu_size = 16, colmv_size = 4, colmv_byte = 16;
+    RK_U32 colmv_compress = p_hal->pp->frame_mbs_only_flag ? 1 : 0;
+    RK_S32 mv_size;
 
-    if (task->dec.flags.parse_err ||
-        task->dec.flags.ref_err) {
-        goto __RETURN;
-    }
+    mv_size = vdpu34x_get_colmv_size(width, height, ctu_size, colmv_byte, colmv_size, colmv_compress);
 
     /* if is field mode is enabled enlarge colmv buffer and disable colmv compression */
     if (!p_hal->pp->frame_mbs_only_flag)
@@ -930,11 +909,29 @@ MPP_RET vdpu34x_h264d_gen_regs(void *hal, HalTaskInfo *task)
         hal_bufs_init(&p_hal->cmv_bufs);
         if (p_hal->cmv_bufs == NULL) {
             mpp_err_f("colmv bufs init fail");
-            goto __RETURN;
+            return MPP_NOK;
         }
         p_hal->mv_size = mv_size;
         p_hal->mv_count = mpp_buf_slot_get_count(p_hal->frame_slots);
         hal_bufs_setup(p_hal->cmv_bufs, p_hal->mv_count, 1, &size);
+    }
+
+    return MPP_OK;
+}
+
+MPP_RET vdpu34x_h264d_gen_regs(void *hal, HalTaskInfo *task)
+{
+    MPP_RET ret = MPP_ERR_UNKNOW;
+    H264dHalCtx_t *p_hal = (H264dHalCtx_t *)hal;
+    RK_S32 width = MPP_ALIGN((p_hal->pp->wFrameWidthInMbsMinus1 + 1) << 4, 64);
+    RK_S32 height = MPP_ALIGN((p_hal->pp->wFrameHeightInMbsMinus1 + 1) << 4, 64);
+    Vdpu34xH264dRegCtx *ctx = (Vdpu34xH264dRegCtx *)p_hal->reg_ctx;
+    Vdpu34xH264dRegSet *regs = ctx->regs;
+    INP_CHECK(ret, NULL == p_hal);
+
+    if (task->dec.flags.parse_err ||
+        task->dec.flags.ref_err) {
+        goto __RETURN;
     }
 
     if (p_hal->fast_mode) {
@@ -952,6 +949,9 @@ MPP_RET vdpu34x_h264d_gen_regs(void *hal, HalTaskInfo *task)
             }
         }
     }
+
+    if (vdpu34x_h264d_setup_colmv_buf(hal, width, height))
+        goto __RETURN;
     prepare_spspps(p_hal, (RK_U64 *)&ctx->spspps, sizeof(ctx->spspps));
     prepare_framerps(p_hal, (RK_U64 *)&ctx->rps, sizeof(ctx->rps));
     prepare_scanlist(p_hal, ctx->sclst, sizeof(ctx->sclst));
@@ -1221,3 +1221,19 @@ MPP_RET vdpu34x_h264d_control(void *hal, MpiCmd cmd_type, void *param)
 __RETURN:
     return ret = MPP_OK;
 }
+
+const MppHalApi hal_h264d_vdpu34x = {
+    .name     = "h264d_vdpu34x",
+    .type     = MPP_CTX_DEC,
+    .coding   = MPP_VIDEO_CodingAVC,
+    .ctx_size = sizeof(Vdpu34xH264dRegCtx),
+    .flag     = 0,
+    .init     = vdpu34x_h264d_init,
+    .deinit   = vdpu34x_h264d_deinit,
+    .reg_gen  = vdpu34x_h264d_gen_regs,
+    .start    = vdpu34x_h264d_start,
+    .wait     = vdpu34x_h264d_wait,
+    .reset    = vdpu34x_h264d_reset,
+    .flush    = vdpu34x_h264d_flush,
+    .control  = vdpu34x_h264d_control,
+};

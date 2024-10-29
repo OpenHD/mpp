@@ -750,11 +750,12 @@ static RK_S32 hls_slice_header(HEVCContext *s)
     }
     s->pps = (HEVCPPS*)s->pps_list[sh->pps_id];
 
-    if (s->sps != (HEVCSPS*)s->sps_list[s->pps->sps_id]) {
+    if (s->sps_need_upate || s->sps != (HEVCSPS*)s->sps_list[s->pps->sps_id]) {
         s->sps = (HEVCSPS*)s->sps_list[s->pps->sps_id];
         mpp_hevc_clear_refs(s);
 
         s->ps_need_upate = 1;
+        s->sps_need_upate = 0;
         ret = set_sps(s, s->sps);
         if (ret < 0)
             return ret;
@@ -1156,6 +1157,7 @@ static RK_S32 mpp_hevc_output_frame(void *ctx, int flush)
     H265dContext_t *h265dctx = (H265dContext_t *)ctx;
     HEVCContext *s = (HEVCContext *)h265dctx->priv_data;
     MppDecCfgSet *cfg = h265dctx->cfg;
+    RK_U32 find_next_ready = 0;
 
     if (cfg->base.fast_out)
         return mpp_hevc_out_dec_order(ctx);
@@ -1201,6 +1203,30 @@ static RK_S32 mpp_hevc_output_frame(void *ctx, int flush)
             h265d_dbg(H265D_DBG_REF,
                       "Output frame with POC %d frame->slot_index = %d\n", frame->poc, frame->slot_index);
 
+            do {
+                find_next_ready = 0;
+                for (i = 0; i < MPP_ARRAY_ELEMS(s->DPB); i++) {
+                    HEVCFrame *frame_next_ready = &s->DPB[i];
+                    if ((frame_next_ready->flags & HEVC_FRAME_FLAG_OUTPUT) &&
+                        frame_next_ready->sequence == s->seq_output) {
+                        if (frame_next_ready->poc == frame->poc + 1) {
+                            find_next_ready = 1;
+                            s->output_frame_idx = i;
+                            frame_next_ready->flags &= ~(HEVC_FRAME_FLAG_OUTPUT);
+                            frame = frame_next_ready;
+                            mpp_buf_slot_set_flag(s->slots, frame->slot_index, SLOT_QUEUE_USE);
+                            mpp_buf_slot_enqueue(s->slots, frame->slot_index, QUEUE_DISPLAY);
+                            h265d_dbg(H265D_DBG_REF,
+                                      "Output frame with POC %d frm_next_ready->slot_index = %d\n",
+                                      frame_next_ready->poc, frame_next_ready->slot_index);
+                            /* release any frames that are now unused */
+                            for (i = 0; i < MPP_ARRAY_ELEMS(s->DPB); i++) {
+                                mpp_hevc_unref_frame(s, &s->DPB[i], 0);
+                            }
+                        }
+                    }
+                }
+            } while (find_next_ready);
 
             return 1;
         }
@@ -1645,7 +1671,7 @@ static RK_S32 split_nal_units(HEVCContext *s, RK_U8 *buf, RK_U32 length)
 
         consumed = mpp_hevc_extract_rbsp(s, buf, extract_length, nal);
 
-        if (consumed <= 0) {
+        if (consumed < 0) {
             ret = MPP_ERR_STREAM;
             goto fail;
         }
@@ -2004,6 +2030,7 @@ MPP_RET h265d_parse(void *ctx, HalDecTask *task)
         s->task->syntax.data = s->hal_pic_private;
         s->task->syntax.number = 1;
         s->task->valid = 1;
+        s->ps_need_upate = 0;
     }
     if (s->eos) {
         h265d_flush(ctx);
@@ -2031,8 +2058,10 @@ MPP_RET h265d_deinit(void *ctx)
         mpp_frame_deinit(&s->DPB[i].frame);
     }
 
-    for (i = 0; i < MAX_VPS_COUNT; i++)
-        mpp_free(s->vps_list[i]);
+    for (i = 0; i < MAX_VPS_COUNT; i++) {
+        if (s->vps_list[i])
+            mpp_mem_pool_put(s->vps_pool, s->vps_list[i]);
+    }
     for (i = 0; i < MAX_SPS_COUNT; i++) {
         if (s->sps_list[i])
             mpp_mem_pool_put(s->sps_pool, s->sps_list[i]);
@@ -2067,6 +2096,8 @@ MPP_RET h265d_deinit(void *ctx)
         mpp_packet_deinit(&s->input_packet);
     }
 
+    if (s->vps_pool)
+        mpp_mem_pool_deinit(s->vps_pool);
     if (s->sps_pool)
         mpp_mem_pool_deinit(s->sps_pool);
 
@@ -2200,6 +2231,7 @@ MPP_RET h265d_init(void *ctx, ParserCfg *parser_cfg)
 
     s->pre_pps_id = -1;
 
+    s->vps_pool = mpp_mem_pool_init(sizeof(HEVCVPS));
     s->sps_pool = mpp_mem_pool_init(sizeof(HEVCSPS));
 
 #ifdef dump

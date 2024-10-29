@@ -48,6 +48,7 @@ typedef struct {
     MppEncCfgSet        *cfg;
     MppEncRefs          refs;
     RK_U32              idr_request;
+    RK_U32              pre_ref_idx;
 
     /* H.264 high level syntax */
     H264eSps            sps;
@@ -101,6 +102,9 @@ static void init_h264e_cfg_set(MppEncCfgSet *cfg, MppClientType type)
     memset(h264, 0, sizeof(*h264));
     h264->profile = H264_PROFILE_BASELINE;
     h264->level = H264_LEVEL_3_1;
+    cfg->tune.scene_mode = MPP_ENC_SCENE_MODE_DEFAULT;
+    cfg->tune.deblur_en = 0;
+    cfg->tune.vmaf_opt = 0;
 
     switch (type) {
     case VPU_CLIENT_VEPU1 :
@@ -110,6 +114,7 @@ static void init_h264e_cfg_set(MppEncCfgSet *cfg, MppClientType type)
         h264->log2_max_frame_num = 12;
         h264->hw_cfg.hw_poc_type = 2;
         h264->hw_cfg.hw_log2_max_frame_num_minus4 = 12;
+        h264->hw_cfg.hw_split_out = 0;
     } break;
     case VPU_CLIENT_RKVENC : {
         h264->poc_type = 0;
@@ -119,6 +124,7 @@ static void init_h264e_cfg_set(MppEncCfgSet *cfg, MppClientType type)
         h264->chroma_cr_qp_offset = -6;
         h264->hw_cfg.hw_poc_type = 0;
         h264->hw_cfg.hw_log2_max_frame_num_minus4 = 12;
+        h264->hw_cfg.hw_split_out = 0;
     } break;
     default : {
         h264->poc_type = 0;
@@ -126,6 +132,7 @@ static void init_h264e_cfg_set(MppEncCfgSet *cfg, MppClientType type)
         h264->log2_max_frame_num = 12;
         h264->hw_cfg.hw_poc_type = 0;
         h264->hw_cfg.hw_log2_max_frame_num_minus4 = 12;
+        h264->hw_cfg.hw_split_out = 0;
     } break;
     }
 
@@ -165,10 +172,10 @@ static void init_h264e_cfg_set(MppEncCfgSet *cfg, MppClientType type)
     rc_cfg->bps_min = rc_cfg->bps_target * 3 / 4;
     rc_cfg->fps_in_flex = 0;
     rc_cfg->fps_in_num = 30;
-    rc_cfg->fps_in_denorm = 1;
+    rc_cfg->fps_in_denom = 1;
     rc_cfg->fps_out_flex = 0;
     rc_cfg->fps_out_num = 30;
-    rc_cfg->fps_out_denorm = 1;
+    rc_cfg->fps_out_denom = 1;
     rc_cfg->gop = 60;
     rc_cfg->max_reenc_times = 1;
     rc_cfg->max_i_prop = 30;
@@ -185,6 +192,14 @@ static void init_h264e_cfg_set(MppEncCfgSet *cfg, MppClientType type)
     rc_cfg->fqp_min_p = INT_MAX;
     rc_cfg->fqp_max_i = INT_MAX;
     rc_cfg->fqp_max_p = INT_MAX;
+
+    cfg->tune.lambda_idx_i = 6;
+    cfg->tune.lambda_idx_p = 6;
+    cfg->tune.atl_str = 1;
+    cfg->tune.atr_str_i = 1;
+    cfg->tune.atr_str_p = 1;
+    cfg->tune.anti_flicker_str = 1;
+    cfg->tune.deblur_str = 3;
 }
 
 static void h264e_add_syntax(H264eCtx *ctx, H264eSyntaxType type, void *p)
@@ -340,7 +355,7 @@ static MPP_RET h264e_proc_prep_cfg(MppEncPrepCfg *dst, MppEncPrepCfg *src)
 
         if (MPP_FRAME_FMT_IS_FBC(dst->format) && (dst->mirroring || dst->rotation || dst->flip)) {
             // rk3588 rkvenc support fbc with rotation
-            if (!strstr(mpp_get_soc_name(), "rk3588")) {
+            if (mpp_get_soc_type() != ROCKCHIP_SOC_RK3588) {
                 mpp_err("invalid cfg fbc data no support mirror %d, rotation %d, or flip %d",
                         dst->mirroring, dst->rotation, dst->flip);
                 ret = MPP_ERR_VALUE;
@@ -759,7 +774,15 @@ static MPP_RET h264e_proc_dpb(void *ctx, HalEncTask *task)
     // update frame usage
     frms->seq_idx = curr->seq_idx;
     frms->curr_idx = curr->slot_idx;
-    frms->refr_idx = (refr) ? refr->slot_idx : curr->slot_idx;
+
+    if (refr) {
+        if (refr->status.force_pskip)
+            frms->refr_idx = p->pre_ref_idx;
+        else
+            frms->refr_idx = refr->slot_idx;
+    } else {
+        frms->refr_idx = curr->slot_idx;
+    }
 
     for (i = 0; i < (RK_S32)MPP_ARRAY_ELEMS(frms->usage); i++)
         frms->usage[i] = dpb->frames[i].on_used;
@@ -873,6 +896,7 @@ static MPP_RET h264e_sw_enc(void *ctx, HalEncTask *task)
 
     rc_info->bit_real = task->length;
     rc_info->quality_real = rc_info->quality_target;
+    p->pre_ref_idx = p->frms.refr_idx;
     mpp_packet_add_segment_info(packet, H264_NALU_TYPE_SLICE, length, final_len);
 
     return MPP_OK;

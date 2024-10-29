@@ -30,7 +30,6 @@
 #include "hal_avs2d_vdpu382.h"
 #include "mpp_dec_cb_param.h"
 #include "vdpu382_avs2d.h"
-#include "rk_hdr_meta_com.h"
 
 #define VDPU382_FAST_REG_SET_CNT    (3)
 #define MAX_REF_NUM                 (8)
@@ -79,6 +78,7 @@ typedef struct avs2d_reg_ctx_t {
 
 } Avs2dVdpu382RegCtx_t;
 
+MPP_RET hal_avs2d_vdpu382_deinit(void *hal);
 static RK_U32 avs2d_ver_align(RK_U32 val)
 {
     return MPP_ALIGN(val, 16);
@@ -459,7 +459,7 @@ static MPP_RET fill_registers(Avs2dHalCtx_t *p_hal, Vdpu382Avs2dRegSet *p_regs, 
         for (i = 0; i < refp->ref_pic_num; i++) {
             MppFrame frame_ref = NULL;
 
-            RK_S32 slot_idx = task_dec->refer[i] < 0 ? valid_slot : task_dec->refer[i];
+            RK_S32 slot_idx = task_dec->refer[i] < 0 ? task_dec->refer[valid_slot] : task_dec->refer[i];
 
             if (slot_idx < 0) {
                 AVS2D_HAL_DBG(AVS2D_HAL_DBG_ERROR, "missing ref, could not found valid ref");
@@ -522,9 +522,6 @@ static MPP_RET fill_registers(Avs2dHalCtx_t *p_hal, Vdpu382Avs2dRegSet *p_regs, 
         p_regs->common_addr.reg129_rlcwrite_base = p_regs->common_addr.reg128_rlc_base;
         common->reg016_str_len = MPP_ALIGN(mpp_packet_get_length(task_dec->input_packet), 16) + 64;
     }
-
-    if (MPP_FRAME_FMT_IS_HDR(mpp_frame_get_fmt(mframe)) && p_hal->cfg->base.enable_hdr_meta)
-        fill_hdr_meta_to_frame(mframe, HDR_AVS2);
 
     /* set scale down info */
     if (mpp_frame_get_thumbnail_en(mframe)) {
@@ -621,23 +618,6 @@ MPP_RET hal_avs2d_vdpu382_init(void *hal, MppHalCfg *cfg)
     mpp_slots_set_prop(p_hal->frame_slots, SLOTS_VER_ALIGN, avs2d_ver_align);
     mpp_slots_set_prop(p_hal->frame_slots, SLOTS_LEN_ALIGN, avs2d_len_align);
 
-    {
-        // report hw_info to parser
-        const MppSocInfo *info = mpp_get_soc_info();
-        const void *hw_info = NULL;
-
-        for (i = 0; i < MPP_ARRAY_ELEMS(info->dec_caps); i++) {
-            if (info->dec_caps[i] && info->dec_caps[i]->type == VPU_CLIENT_RKVDEC) {
-                hw_info = info->dec_caps[i];
-                break;
-            }
-        }
-
-        mpp_assert(hw_info);
-        cfg->hw_info = hw_info;
-        p_hal->hw_info = hw_info;
-    }
-
 __RETURN:
     AVS2D_HAL_TRACE("Out. ret %d", ret);
     (void)cfg;
@@ -655,29 +635,12 @@ static MPP_RET set_up_colmv_buf(void *hal)
     Avs2dSyntax_t *syntax = &p_hal->syntax;
     PicParams_Avs2d *pp   = &syntax->pp;
     RK_U32 mv_size = 0;
-
     RK_U32 ctu_size = 1 << (p_hal->syntax.pp.lcu_size);
-    RK_U32 segment_w = 64 * COLMV_BLOCK_SIZE * COLMV_BLOCK_SIZE / ctu_size;
-    RK_U32 segment_h = ctu_size;
-    RK_U32 pic_w_align = MPP_ALIGN(pp->pic_width_in_luma_samples, segment_w);
-    RK_U32 pic_h_align = MPP_ALIGN(pp->pic_height_in_luma_samples, segment_h);
-    RK_U32 seg_cnt_w = pic_w_align / segment_w;
-    RK_U32 seg_cnt_h = pic_h_align / segment_h;
-    RK_U32 seg_head_line_size = MPP_ALIGN(seg_cnt_w, 16);
-    RK_U32 seg_head_size = seg_head_line_size * seg_cnt_h;
-    RK_U32 seg_payload_size = seg_cnt_w * seg_cnt_h * 64 * COLMV_BYTES;
+    RK_U32 width = p_hal->syntax.pp.pic_width_in_luma_samples;
+    RK_U32 height = p_hal->syntax.pp.pic_height_in_luma_samples;
 
-    if (COLMV_COMPRESS_EN)
-        mv_size = seg_payload_size + seg_head_size;
-    else
-        mv_size = (MPP_ALIGN(p_hal->syntax.pp.pic_width_in_luma_samples, 64) *
-                   MPP_ALIGN(p_hal->syntax.pp.pic_height_in_luma_samples, 64)) >> 5;
-
-    // colmv frame size align to 128byte
-    if ((mv_size / 8) % 2 == 1) {
-        mv_size += 8;
-    }
-
+    mv_size = vdpu382_get_colmv_size(width, height, ctu_size, COLMV_BYTES,
+                                     COLMV_BLOCK_SIZE, COLMV_COMPRESS_EN);
     if (pp->field_coded_sequence)
         mv_size *= 2;
     AVS2D_HAL_TRACE("mv_size %d", mv_size);
@@ -1187,6 +1150,7 @@ MPP_RET hal_avs2d_vdpu382_wait(void *hal, HalTaskInfo *task)
             param.hard_err = 0;
 
         task->dec.flags.ref_used = p_regs->statistic.reg265.link_perf_cnt0;
+        task->dec.flags.ref_info_valid = 1;
 
         if (task->dec.flags.ref_miss) {
             RK_U32 ref_hw_usage = p_regs->statistic.reg265.link_perf_cnt0;
@@ -1209,3 +1173,19 @@ __RETURN:
     AVS2D_HAL_TRACE("Out. ret %d", ret);
     return ret;
 }
+
+const MppHalApi hal_avs2d_vdpu382 = {
+    .name     = "avs2d_vdpu382",
+    .type     = MPP_CTX_DEC,
+    .coding   = MPP_VIDEO_CodingAVS2,
+    .ctx_size = sizeof(Avs2dVdpu382RegCtx_t),
+    .flag     = 0,
+    .init     = hal_avs2d_vdpu382_init,
+    .deinit   = hal_avs2d_vdpu382_deinit,
+    .reg_gen  = hal_avs2d_vdpu382_gen_regs,
+    .start    = hal_avs2d_vdpu382_start,
+    .wait     = hal_avs2d_vdpu382_wait,
+    .reset    = NULL,
+    .flush    = NULL,
+    .control  = NULL,
+};

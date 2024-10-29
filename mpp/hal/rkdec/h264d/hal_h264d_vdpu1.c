@@ -38,6 +38,7 @@ const RK_U32 vdpu1_ref_idx[16] = {
     22, 23, 24, 25, 26, 27, 28, 29
 };
 
+MPP_RET vdpu1_h264d_deinit(void *hal);
 static MPP_RET vdpu1_set_refer_pic_idx(H264dVdpu1Regs_t *p_regs, RK_U32 i,
                                        RK_U16 val)
 {
@@ -742,6 +743,7 @@ MPP_RET vdpu1_h264d_init(void *hal, MppHalCfg *cfg)
     MPP_RET ret = MPP_ERR_UNKNOW;
     H264dHalCtx_t  *p_hal = (H264dHalCtx_t *)hal;
     INP_CHECK(ret, NULL == hal);
+    (void) cfg;
 
     //!< malloc init registers
     MEM_CHECK(ret, p_hal->priv =
@@ -775,23 +777,6 @@ MPP_RET vdpu1_h264d_init(void *hal, MppHalCfg *cfg)
 
     mpp_slots_set_prop(p_hal->frame_slots, SLOTS_HOR_ALIGN, vdpu_hor_align);
     mpp_slots_set_prop(p_hal->frame_slots, SLOTS_VER_ALIGN, vdpu_ver_align);
-
-    {
-        // report hw_info to parser
-        const MppSocInfo *info = mpp_get_soc_info();
-        const void *hw_info = NULL;
-        RK_U32 i;
-
-        for (i = 0; i < MPP_ARRAY_ELEMS(info->dec_caps); i++) {
-            if (info->dec_caps[i] && info->dec_caps[i]->type == VPU_CLIENT_VDPU1) {
-                hw_info = info->dec_caps[i];
-                break;
-            }
-        }
-
-        mpp_assert(hw_info);
-        cfg->hw_info = hw_info;
-    }
 
 __RETURN:
     return MPP_OK;
@@ -1046,3 +1031,19 @@ MPP_RET vdpu1_h264d_control(void *hal, MpiCmd cmd_type, void *param)
 __RETURN:
     return ret = MPP_OK;
 }
+
+const MppHalApi hal_h264d_vdpu1 = {
+    .name     = "h264d_vdpu1",
+    .type     = MPP_CTX_DEC,
+    .coding   = MPP_VIDEO_CodingAVC,
+    .ctx_size = sizeof(H264dVdpuRegCtx_t),
+    .flag     = 0,
+    .init     = vdpu1_h264d_init,
+    .deinit   = vdpu1_h264d_deinit,
+    .reg_gen  = vdpu1_h264d_gen_regs,
+    .start    = vdpu1_h264d_start,
+    .wait     = vdpu1_h264d_wait,
+    .reset    = vdpu1_h264d_reset,
+    .flush    = vdpu1_h264d_flush,
+    .control  = vdpu1_h264d_control,
+};

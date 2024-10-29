@@ -134,16 +134,24 @@ typedef struct VUI {
     RK_S32 log2_max_mv_length_vertical;
 } VUI;
 
+/* ProfileTierLevel */
 typedef struct PTLCommon {
     RK_U8 profile_space;
     RK_U8 tier_flag;
     RK_U8 profile_idc;
     RK_U8 profile_compatibility_flag[32];
     RK_U8 level_idc;
+
     RK_U8 progressive_source_flag;
     RK_U8 interlaced_source_flag;
     RK_U8 non_packed_constraint_flag;
     RK_U8 frame_only_constraint_flag;
+
+    RK_S32 bit_depth_constraint;
+    H265ChromaFmt chroma_format_constraint;
+    RK_U8 intra_constraint_flag;
+    RK_U8 one_picture_only_constraint_flag;
+    RK_U8 lower_bitrate_constraint_flag;
 } PTLCommon;
 
 typedef struct PTL {
@@ -254,6 +262,19 @@ typedef struct HEVCSPS {
     RK_S32 max_transform_hierarchy_depth_inter;
     RK_S32 max_transform_hierarchy_depth_intra;
 
+    // SPS extension
+    RK_S32 sps_extension_flag;
+    RK_S32 sps_range_extension_flag;
+    RK_S32 transform_skip_rotation_enabled_flag;
+    RK_S32 transform_skip_context_enabled_flag;
+    RK_S32 implicit_rdpcm_enabled_flag;
+    RK_S32 explicit_rdpcm_enabled_flag;
+    RK_S32 extended_precision_processing_flag;
+    RK_S32 intra_smoothing_disabled_flag;
+    RK_S32 high_precision_offsets_enabled_flag;
+    RK_S32 persistent_rice_adaptation_enabled_flag;
+    RK_S32 cabac_bypass_alignment_enabled_flag;
+
     ///< coded frame dimension in various units
     RK_S32 width;
     RK_S32 height;
@@ -338,9 +359,18 @@ typedef struct HEVCPPS {
     RK_S32 num_extra_slice_header_bits;
     RK_U8 slice_header_extension_present_flag;
 
+    // PPS extension
     RK_U8 pps_extension_flag;
     RK_U8 pps_range_extensions_flag;
-    RK_U8 pps_extension_data_flag;
+    RK_U8 log2_max_transform_skip_block_size;
+    RK_U8 cross_component_prediction_enabled_flag;
+    RK_U8 chroma_qp_offset_list_enabled_flag;
+    RK_U8 diff_cu_chroma_qp_offset_depth;
+    RK_U8 chroma_qp_offset_list_len_minus1;
+    RK_S8 cb_qp_offset_list[6];
+    RK_S8 cr_qp_offset_list[6];
+    RK_U8 log2_sao_offset_scale_luma;
+    RK_U8 log2_sao_offset_scale_chroma;
 
     // Inferred parameters
     HevcPpsBufInfo bufs;
@@ -504,6 +534,7 @@ typedef struct HEVCContext {
     RK_U8 *sps_list[MAX_SPS_COUNT];
     RK_U8 *pps_list[MAX_PPS_COUNT];
 
+    MppMemPool vps_pool;
     MppMemPool sps_pool;
 
     SliceHeader sh;
@@ -614,6 +645,7 @@ typedef struct HEVCContext {
     RK_U8  miss_ref_flag;
     RK_U8  pre_pps_id;
     RK_U8  ps_need_upate;
+    RK_U8  sps_need_upate;
 
     /*temporary storage for slice_cut_param*/
     RK_U32  start_bit;

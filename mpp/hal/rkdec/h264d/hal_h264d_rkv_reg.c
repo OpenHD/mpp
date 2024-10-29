@@ -221,8 +221,7 @@ const RK_U32 rkv_cabac_table[928] = {
     0x1423091d, 0x430e241d, 0x00000000, 0x00000000
 };
 
-
-
+MPP_RET rkv_h264d_deinit(void *hal);
 static RK_U32 rkv_ver_align(RK_U32 val)
 {
     return MPP_ALIGN(val, 16);
@@ -584,22 +583,6 @@ MPP_RET rkv_h264d_init(void *hal, MppHalCfg *cfg)
     mpp_slots_set_prop(p_hal->frame_slots, SLOTS_VER_ALIGN, rkv_ver_align);
     mpp_slots_set_prop(p_hal->frame_slots, SLOTS_LEN_ALIGN, rkv_len_align);
 
-    {
-        // report hw_info to parser
-        const MppSocInfo *info = mpp_get_soc_info();
-        const void *hw_info = NULL;
-
-        for (i = 0; i < MPP_ARRAY_ELEMS(info->dec_caps); i++) {
-            if (info->dec_caps[i] && info->dec_caps[i]->type == VPU_CLIENT_RKVDEC) {
-                hw_info = info->dec_caps[i];
-                break;
-            }
-        }
-
-        mpp_assert(hw_info);
-        cfg->hw_info = hw_info;
-    }
-
     (void)cfg;
 __RETURN:
     return MPP_OK;
@@ -892,3 +875,19 @@ MPP_RET rkv_h264d_control(void *hal, MpiCmd cmd_type, void *param)
 __RETURN:
     return ret = MPP_OK;
 }
+
+const MppHalApi hal_h264d_rkvdpu = {
+    .name     = "h264d_rkvdpu",
+    .type     = MPP_CTX_DEC,
+    .coding   = MPP_VIDEO_CodingAVC,
+    .ctx_size = sizeof(H264dRkvRegCtx_t),
+    .flag     = 0,
+    .init     = rkv_h264d_init,
+    .deinit   = rkv_h264d_deinit,
+    .reg_gen  = rkv_h264d_gen_regs,
+    .start    = rkv_h264d_start,
+    .wait     = rkv_h264d_wait,
+    .reset    = rkv_h264d_reset,
+    .flush    = rkv_h264d_flush,
+    .control  = rkv_h264d_control,
+};

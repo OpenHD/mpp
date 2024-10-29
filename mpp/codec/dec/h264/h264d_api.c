@@ -89,6 +89,7 @@ static MPP_RET free_cur_ctx(H264dCurCtx_t *p_Cur)
 
         MPP_FREE(p_Cur->subsps);
         MPP_FREE(p_Cur->sei);
+        MPP_FREE(p_Cur->hdr_dynamic_meta);
     }
 
 __RETURN:
@@ -396,13 +397,13 @@ MPP_RET h264d_reset(void *decoder)
 
     INP_CHECK(ret, !decoder);
 
-    FUN_CHECK(ret = flush_dpb(p_Dec->p_Vid->p_Dpb_layer[0], 1));
-    FUN_CHECK(ret = init_dpb(p_Dec->p_Vid, p_Dec->p_Vid->p_Dpb_layer[0], 1));
+    flush_dpb(p_Dec->p_Vid->p_Dpb_layer[0], 1);
+    init_dpb(p_Dec->p_Vid, p_Dec->p_Vid->p_Dpb_layer[0], 1);
     if (p_Dec->mvc_valid) {
         // layer_id == 1
-        FUN_CHECK(ret = flush_dpb(p_Dec->p_Vid->p_Dpb_layer[1], 1));
-        FUN_CHECK(ret = init_dpb(p_Dec->p_Vid, p_Dec->p_Vid->p_Dpb_layer[1], 2));
-        FUN_CHECK(ret = check_mvc_dpb(p_Dec->p_Vid, p_Dec->p_Vid->p_Dpb_layer[0], p_Dec->p_Vid->p_Dpb_layer[1]));
+        flush_dpb(p_Dec->p_Vid->p_Dpb_layer[1], 1);
+        init_dpb(p_Dec->p_Vid, p_Dec->p_Vid->p_Dpb_layer[1], 2);
+        check_mvc_dpb(p_Dec->p_Vid, p_Dec->p_Vid->p_Dpb_layer[0], p_Dec->p_Vid->p_Dpb_layer[1]);
     }
     flush_dpb_buf_slot(p_Dec);
     //!< reset input parameter
@@ -451,8 +452,6 @@ MPP_RET h264d_reset(void *decoder)
 
 __RETURN:
     return ret = MPP_OK;
-__FAILED:
-    return ret = MPP_NOK;
 }
 
 /*!
@@ -522,7 +521,7 @@ MPP_RET h264d_prepare(void *decoder, MppPacket pkt, HalDecTask *task)
     INP_CHECK(ret, !decoder && !pkt && !task);
 
     p_Inp = p_Dec->p_Inp;
-    if (p_Inp->has_get_eos || p_Dec->errctx.un_spt_flag) {
+    if (p_Inp->has_get_eos) {
         mpp_packet_set_length(pkt, 0);
         task->flags.eos = mpp_packet_get_eos(pkt);
         goto __RETURN;

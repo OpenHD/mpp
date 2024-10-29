@@ -23,6 +23,7 @@
 #include "mpp_common.h"
 
 #include "h265e_ps.h"
+#include "mpp_enc_ref.h"
 
 #define MAX_UINT        0xFFFFFFFFU
 
@@ -116,12 +117,14 @@ MPP_RET h265e_set_vps(H265eCtx *ctx, H265eVps *vps)
     MppEncH265Cfg *codec = &ctx->cfg->codec.h265;
     ProfileTierLevel *profileTierLevel = &vps->m_ptl.m_generalPTL;
     MppEncPrepCfg *prep = &ctx->cfg->prep;
+    MppEncRefCfg ref_cfg = ctx->cfg->ref_cfg;
     RK_U32 maxlumas = prep->width * prep->height;
     RK_S32 level_idc = H265_LEVEL_NONE;
+    MppEncRefCfgImpl *refs = (MppEncRefCfgImpl *)ref_cfg;
 
     vps->m_VPSId = 0;
-    vps->m_maxTLayers = 1;
-    vps->m_maxLayers = 1;
+    vps->m_maxTLayers = refs->max_tlayers ? refs->max_tlayers : 1;
+    vps->m_maxLayers = vps->m_maxTLayers;
     vps->m_bTemporalIdNestingFlag = 1;
     vps->m_numHrdParameters = 0;
     vps->m_maxNuhReservedZeroLayerId = 0;
@@ -183,7 +186,7 @@ MPP_RET h265e_set_sps(H265eCtx *ctx, H265eSps *sps, H265eVps *vps)
     MppEncRefCfg ref_cfg = ctx->cfg->ref_cfg;
     MppEncH265VuiCfg *vui = &codec->vui;
     MppFrameFormat fmt = prep->format;
-    RK_S32 i_timebase_num = rc->fps_out_denorm;
+    RK_S32 i_timebase_num = rc->fps_out_denom;
     RK_S32 i_timebase_den = rc->fps_out_num;
     RK_U8  convertToBit[MAX_CU_SIZE + 1];
     RK_U32 maxCUDepth, minCUDepth, addCUDepth;
@@ -205,6 +208,9 @@ MPP_RET h265e_set_sps(H265eCtx *ctx, H265eSps *sps, H265eVps *vps)
     minCUDepth = (codec->max_cu_size >> (maxCUDepth - 1));
 
     tuQTMaxLog2Size = convertToBit[codec->max_cu_size] + 2 - 1;
+    if (mpp_get_soc_type() == ROCKCHIP_SOC_RK3576) {
+        tuQTMaxLog2Size = tuQTMaxLog2Size + 1;
+    }
 
     addCUDepth = 0;
     while ((RK_U32)(codec->max_cu_size >> maxCUDepth) > (1u << (tuQTMinLog2Size + addCUDepth))) {
@@ -245,7 +251,7 @@ MPP_RET h265e_set_sps(H265eCtx *ctx, H265eSps *sps, H265eVps *vps)
     sps->m_SPSId = 0;
     sps->m_VPSId = 0;
     sps->m_chromaFormatIdc = (fmt == MPP_FMT_YUV400) ? H265_CHROMA_400 : H265_CHROMA_420;
-    sps->m_maxTLayers = 1;
+    sps->m_maxTLayers = vps->m_maxLayers;
     sps->m_picWidthInLumaSamples = prep->width + pad[0];
     sps->m_picHeightInLumaSamples = prep->height + pad[1];
     sps->m_log2MinCodingBlockSize = 0;
@@ -291,9 +297,6 @@ MPP_RET h265e_set_sps(H265eCtx *ctx, H265eSps *sps, H265eVps *vps)
     sps->m_qpBDOffsetC = 0;
 
     sps->m_bUseSAO = codec->sao_enable;
-
-    sps->m_maxTLayers = 1;
-
     sps->m_bTemporalIdNestingFlag = 1;
 
     for (i = 0; i < sps->m_maxTLayers; i++) {
@@ -321,6 +324,14 @@ MPP_RET h265e_set_sps(H265eCtx *ctx, H265eSps *sps, H265eVps *vps)
     } else if (cpb_info->max_st_tid) {
         sps->m_TMVPFlagsPresent = 0;
     }
+
+    if (rc->drop_mode == MPP_ENC_RC_DROP_FRM_PSKIP) {
+        codec->tmvp_enable = 0;
+        sps->m_TMVPFlagsPresent = 0;
+        codec->sao_enable = 0;
+        sps->m_bUseSAO = 0;
+    }
+
     sps->m_ptl = &vps->m_ptl;
     sps->m_vuiParametersPresentFlag = 1;
     if (sps->m_vuiParametersPresentFlag) {
@@ -390,16 +401,14 @@ MPP_RET h265e_set_pps(H265eCtx  *ctx, H265ePps *pps, H265eSps *sps)
 {
     MppEncH265Cfg *codec = &ctx->cfg->codec.h265;
     MppEncRcCfg *rc = &ctx->cfg->rc;
-    pps->m_bConstrainedIntraPred = 0;
+
+    pps->m_bConstrainedIntraPred = codec->const_intra_pred;
     pps->m_PPSId = 0;
     pps->m_SPSId = 0;
     pps->m_picInitQPMinus26 = 0;
-    pps->m_useDQP = 0;
-    if (rc->rc_mode != MPP_ENC_RC_MODE_FIXQP) {
-        pps->m_useDQP = 1;
-        pps->m_maxCuDQPDepth = 0;
-        pps->m_minCuDQPSize = (sps->m_maxCUSize >> pps->m_maxCuDQPDepth);
-    }
+    pps->m_useDQP = 1;
+    pps->m_maxCuDQPDepth = rc->cu_qp_delta_depth;
+    pps->m_minCuDQPSize = (sps->m_maxCUSize >> pps->m_maxCuDQPDepth);
 
     pps->m_sps = sps;
     pps->m_bSliceChromaQpFlag = 0;
@@ -424,7 +433,7 @@ MPP_RET h265e_set_pps(H265eCtx  *ctx, H265ePps *pps, H265eSps *sps)
         }
     } else {
         pps->m_deblockingFilterOverrideEnabledFlag = 0;
-        pps->m_picDisableDeblockingFilterFlag = 0;
+        pps->m_picDisableDeblockingFilterFlag = 1;
         pps->m_deblockingFilterBetaOffsetDiv2 = 0;
         pps->m_deblockingFilterTcOffsetDiv2 = 0;
     }
@@ -448,11 +457,16 @@ MPP_RET h265e_set_pps(H265eCtx  *ctx, H265ePps *pps, H265eSps *sps)
     pps->m_nNumTileColumnsMinus1 = 0;
     pps->m_loopFilterAcrossTilesEnabledFlag = !codec->lpf_acs_tile_disable;
     {
-        const char *soc_name = mpp_get_soc_name();
+        RockchipSocType soc_type = mpp_get_soc_type();
+        RK_S32 index;
+        RK_S32 mb_w = (sps->m_picWidthInLumaSamples + sps->m_maxCUSize - 1) / sps->m_maxCUSize;
+        RK_S32 mb_h = (sps->m_picHeightInLumaSamples + sps->m_maxCUSize - 1) / sps->m_maxCUSize;
+        RK_S32 tile_width;
+
         /* check tile support on rk3566 and rk3568 */
-        if (strstr(soc_name, "rk3566") || strstr(soc_name, "rk3568")) {
+        if (soc_type == ROCKCHIP_SOC_RK3566 || soc_type == ROCKCHIP_SOC_RK3568) {
             pps->m_nNumTileColumnsMinus1 = (sps->m_picWidthInLumaSamples - 1) / 1920 ;
-        } else if (strstr(soc_name, "rk3588")) {
+        } else if (soc_type == ROCKCHIP_SOC_RK3588) {
             if (sps->m_picWidthInLumaSamples > 8192) {
                 /* 4 tile for over 8k encoding */
                 pps->m_nNumTileColumnsMinus1 = 3;
@@ -467,7 +481,18 @@ MPP_RET h265e_set_pps(H265eCtx  *ctx, H265ePps *pps, H265eSps *sps)
         if (pps->m_nNumTileColumnsMinus1) {
             pps->m_tiles_enabled_flag = 1;
             pps->m_bTileUniformSpacing = 1;
-            pps->m_loopFilterAcrossTilesEnabledFlag = !codec->lpf_acs_tile_disable;;
+            pps->m_loopFilterAcrossTilesEnabledFlag = !codec->lpf_acs_tile_disable;
+
+            /* calc width per tile */
+            for (index = 0; index < pps->m_nNumTileColumnsMinus1; index++) {
+                tile_width = (index + 1) * mb_w / (pps->m_nNumTileColumnsMinus1 + 1) -
+                             index * mb_w / (pps->m_nNumTileColumnsMinus1 + 1);
+                pps->m_nTileColumnWidthArray[index] = tile_width;
+                pps->m_nTileRowHeightArray[index] = mb_h;
+            }
+            tile_width = mb_w - index * mb_w / (pps->m_nNumTileColumnsMinus1 + 1);
+            pps->m_nTileColumnWidthArray[index] = tile_width;
+            pps->m_nTileRowHeightArray[index] = mb_h;
         }
     }
 

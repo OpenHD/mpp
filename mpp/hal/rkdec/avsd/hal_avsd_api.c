@@ -165,6 +165,7 @@ MPP_RET hal_avsd_init(void *decoder, MppHalCfg *cfg)
     FUN_CHECK(ret = mpp_buffer_group_get_internal(&p_hal->buf_group, MPP_BUFFER_TYPE_ION));
 
     FUN_CHECK(ret = init_hard_platform(p_hal, cfg->coding));
+    cfg->dev = p_hal->dev;
 
     //!< run init funtion
     FUN_CHECK(ret = p_hal->hal_api.init(decoder, cfg));
@@ -193,7 +194,7 @@ MPP_RET hal_avsd_gen_regs(void *decoder, HalTaskInfo *task)
 
     memcpy(&p_hal->syn, task->dec.syntax.data, sizeof(AvsdSyntax_t));
     // check coding
-    coding = (p_hal->syn.pp.profileId == 0x48) ? MPP_VIDEO_CodingAVSPLUS : MPP_VIDEO_CodingAVS;
+    coding = (p_hal->syn.pp.profileId == 0x48) ? MPP_VIDEO_CodingAVSPLUS : p_hal->coding;
     if (coding != p_hal->coding) {
         if (p_hal->dev) {
             ret = mpp_dev_deinit(p_hal->dev);

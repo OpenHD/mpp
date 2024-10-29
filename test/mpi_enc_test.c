@@ -28,12 +28,23 @@
 #include "mpp_time.h"
 #include "mpp_debug.h"
 #include "mpp_common.h"
+#include "mpp_soc.h"
 
 #include "utils.h"
 #include "mpi_enc_utils.h"
 #include "camera_source.h"
 #include "mpp_enc_roi_utils.h"
 #include "mpp_rc_api.h"
+
+static RK_S32 aq_thd_smart[16] = {
+    1,  3,  3,  3,  3,  3,  5,  5,
+    8,  8,  8, 15, 15, 20, 25, 28
+};
+
+static RK_S32 aq_step_smart[16] = {
+    -8, -7, -6, -5, -4, -3, -2, -1,
+    0,  1,  2,  3,  4,  6,  8, 10
+};
 
 typedef struct {
     // base flow context
@@ -118,7 +129,13 @@ typedef struct {
     RK_S32 gop_len;
     RK_S32 vi_len;
     RK_S32 scene_mode;
-
+    RK_S32 cu_qp_delta_depth;
+    RK_S32 anti_flicker_str;
+    RK_S32 atr_str_i;
+    RK_S32 atr_str_p;
+    RK_S32 atl_str;
+    RK_S32 sao_str_i;
+    RK_S32 sao_str_p;
     RK_S64 first_frm;
     RK_S64 first_pkt;
 } MpiEncTestData;
@@ -142,6 +159,44 @@ typedef struct {
     MpiEncTestData      ctx;        // context of encoder
     MpiEncMultiCtxRet   ret;        // return of encoder
 } MpiEncMultiCtxInfo;
+
+static RK_S32 aq_thd[16] = {
+    0,  0,  0,  0,
+    3,  3,  5,  5,
+    8,  8,  8,  15,
+    15, 20, 25, 25
+};
+
+static RK_S32 aq_step_i_ipc[16] = {
+    -8, -7, -6, -5,
+    -4, -3, -2, -1,
+    0,  1,  2,  3,
+    5,  7,  7,  8,
+};
+
+static RK_S32 aq_step_p_ipc[16] = {
+    -8, -7, -6, -5,
+    -4, -2, -1, -1,
+    0,  2,  3,  4,
+    6,  8,  9,  10,
+};
+
+static RK_S32 get_mdinfo_size(MpiEncTestData *p, MppCodingType type)
+{
+    RockchipSocType soc_type = mpp_get_soc_type();
+    RK_S32 md_size;
+    RK_U32 w = p->hor_stride, h = p->ver_stride;
+
+    if (soc_type == ROCKCHIP_SOC_RK3588) {
+        md_size = (MPP_ALIGN(w, 64) >> 6) * (MPP_ALIGN(h, 64) >> 6) * 32;
+    } else {
+        md_size = (MPP_VIDEO_CodingHEVC == type) ?
+                  (MPP_ALIGN(w, 32) >> 5) * (MPP_ALIGN(h, 32) >> 5) * 16 :
+                  (MPP_ALIGN(w, 64) >> 6) * (MPP_ALIGN(h, 16) >> 4) * 16;
+    }
+
+    return md_size;
+}
 
 MPP_RET test_ctx_init(MpiEncMultiCtxInfo *info)
 {
@@ -170,7 +225,6 @@ MPP_RET test_ctx_init(MpiEncMultiCtxInfo *info)
     p->gop_mode     = cmd->gop_mode;
     p->gop_len      = cmd->gop_len;
     p->vi_len       = cmd->vi_len;
-
     p->fps_in_flex  = cmd->fps_in_flex;
     p->fps_in_den   = cmd->fps_in_den;
     p->fps_in_num   = cmd->fps_in_num;
@@ -178,11 +232,14 @@ MPP_RET test_ctx_init(MpiEncMultiCtxInfo *info)
     p->fps_out_den  = cmd->fps_out_den;
     p->fps_out_num  = cmd->fps_out_num;
     p->scene_mode   = cmd->scene_mode;
-    p->mdinfo_size  = (MPP_VIDEO_CodingHEVC == cmd->type) ?
-                      (MPP_ALIGN(p->hor_stride, 32) >> 5) *
-                      (MPP_ALIGN(p->ver_stride, 32) >> 5) * 16 :
-                      (MPP_ALIGN(p->hor_stride, 64) >> 6) *
-                      (MPP_ALIGN(p->ver_stride, 16) >> 4) * 16;
+    p->cu_qp_delta_depth = cmd->cu_qp_delta_depth;
+    p->anti_flicker_str = cmd->anti_flicker_str;
+    p->atr_str_i = cmd->atr_str_i;
+    p->atr_str_p = cmd->atr_str_p;
+    p->atl_str = cmd->atl_str;
+    p->sao_str_i = cmd->sao_str_i;
+    p->sao_str_p = cmd->sao_str_p;
+    p->mdinfo_size  = get_mdinfo_size(p, cmd->type);
 
     if (cmd->file_input) {
         if (!strncmp(cmd->file_input, "/dev/video", 10)) {
@@ -301,7 +358,6 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
     RK_U32 flip;
     RK_U32 gop_mode = p->gop_mode;
     MppEncRefCfg ref = NULL;
-
     /* setup default parameter */
     if (p->fps_in_den == 0)
         p->fps_in_den = 1;
@@ -315,23 +371,57 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
     if (!p->bps)
         p->bps = p->width * p->height / 8 * (p->fps_out_num / p->fps_out_den);
 
+    if (cmd->rc_mode == MPP_ENC_RC_MODE_SMTRC) {
+        mpp_enc_cfg_set_st(cfg, "hw:aq_thrd_i", aq_thd_smart);
+        mpp_enc_cfg_set_st(cfg, "hw:aq_thrd_p", aq_thd_smart);
+        mpp_enc_cfg_set_st(cfg, "hw:aq_step_i", aq_step_smart);
+        mpp_enc_cfg_set_st(cfg, "hw:aq_step_p", aq_step_smart);
+    } else {
+        mpp_enc_cfg_set_st(cfg, "hw:aq_thrd_i", aq_thd);
+        mpp_enc_cfg_set_st(cfg, "hw:aq_thrd_p", aq_thd);
+        mpp_enc_cfg_set_st(cfg, "hw:aq_step_i", aq_step_i_ipc);
+        mpp_enc_cfg_set_st(cfg, "hw:aq_step_p", aq_step_p_ipc);
+    }
+
+    mpp_enc_cfg_set_s32(cfg, "rc:max_reenc_times", 0);
+    mpp_enc_cfg_set_s32(cfg, "rc:cu_qp_delta_depth", p->cu_qp_delta_depth);
+    mpp_enc_cfg_set_s32(cfg, "tune:anti_flicker_str", p->anti_flicker_str);
+    mpp_enc_cfg_set_s32(cfg, "tune:atr_str_i", p->atr_str_i);
+    mpp_enc_cfg_set_s32(cfg, "tune:atr_str_p", p->atr_str_p);
+    mpp_enc_cfg_set_s32(cfg, "tune:atl_str", p->atl_str);
+    mpp_enc_cfg_set_s32(cfg, "tune:sao_str_i", p->sao_str_i);
+    mpp_enc_cfg_set_s32(cfg, "tune:sao_str_p", p->sao_str_p);
+
     mpp_enc_cfg_set_s32(cfg, "tune:scene_mode", p->scene_mode);
+    mpp_enc_cfg_set_s32(cfg, "tune:deblur_en", cmd->deblur_en);
+    mpp_enc_cfg_set_s32(cfg, "tune:deblur_str", cmd->deblur_str);
+    mpp_enc_cfg_set_s32(cfg, "tune:rc_container", cmd->rc_container);
+    mpp_enc_cfg_set_s32(cfg, "tune:vmaf_opt", 0);
+    mpp_enc_cfg_set_s32(cfg, "hw:qbias_en", 1);
+    mpp_enc_cfg_set_s32(cfg, "hw:qbias_i", cmd->bias_i);
+    mpp_enc_cfg_set_s32(cfg, "hw:qbias_p", cmd->bias_p);
+    mpp_enc_cfg_set_s32(cfg, "hw:skip_bias_en", 0);
+    mpp_enc_cfg_set_s32(cfg, "hw:skip_bias", 4);
+    mpp_enc_cfg_set_s32(cfg, "hw:skip_sad", 8);
 
     mpp_enc_cfg_set_s32(cfg, "prep:width", p->width);
     mpp_enc_cfg_set_s32(cfg, "prep:height", p->height);
     mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", p->hor_stride);
     mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", p->ver_stride);
     mpp_enc_cfg_set_s32(cfg, "prep:format", p->fmt);
+    mpp_enc_cfg_set_s32(cfg, "prep:range", MPP_FRAME_RANGE_JPEG);
 
     mpp_enc_cfg_set_s32(cfg, "rc:mode", p->rc_mode);
+    mpp_enc_cfg_set_u32(cfg, "rc:max_reenc_times", 0);
+    mpp_enc_cfg_set_u32(cfg, "rc:super_mode", 0);
 
     /* fix input / output frame rate */
     mpp_enc_cfg_set_s32(cfg, "rc:fps_in_flex", p->fps_in_flex);
     mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num", p->fps_in_num);
-    mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denorm", p->fps_in_den);
+    mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denom", p->fps_in_den);
     mpp_enc_cfg_set_s32(cfg, "rc:fps_out_flex", p->fps_out_flex);
     mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num", p->fps_out_num);
-    mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denorm", p->fps_out_den);
+    mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denom", p->fps_out_den);
 
     /* drop frame or not when bitrate overflow */
     mpp_enc_cfg_set_u32(cfg, "rc:drop_mode", MPP_ENC_RC_DROP_FRM_DISABLED);
@@ -383,7 +473,8 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
         } break;
         case MPP_ENC_RC_MODE_CBR :
         case MPP_ENC_RC_MODE_VBR :
-        case MPP_ENC_RC_MODE_AVBR : {
+        case MPP_ENC_RC_MODE_AVBR :
+        case MPP_ENC_RC_MODE_SMTRC : {
             mpp_enc_cfg_set_s32(cfg, "rc:qp_init", cmd->qp_init ? cmd->qp_init : -1);
             mpp_enc_cfg_set_s32(cfg, "rc:qp_max", cmd->qp_max ? cmd->qp_max : 51);
             mpp_enc_cfg_set_s32(cfg, "rc:qp_min", cmd->qp_min ? cmd->qp_min : 10);
@@ -391,9 +482,9 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
             mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", cmd->qp_min_i ? cmd->qp_min_i : 10);
             mpp_enc_cfg_set_s32(cfg, "rc:qp_ip", 2);
             mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_i", cmd->fqp_min_i ? cmd->fqp_min_i : 10);
-            mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_i", cmd->fqp_max_i ? cmd->fqp_max_i : 51);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_i", cmd->fqp_max_i ? cmd->fqp_max_i : 45);
             mpp_enc_cfg_set_s32(cfg, "rc:fqp_min_p", cmd->fqp_min_p ? cmd->fqp_min_p : 10);
-            mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_p", cmd->fqp_max_p ? cmd->fqp_max_p : 51);
+            mpp_enc_cfg_set_s32(cfg, "rc:fqp_max_p", cmd->fqp_max_p ? cmd->fqp_max_p : 45);
         } break;
         default : {
             mpp_err_f("unsupport encoder rc mode %d\n", p->rc_mode);
@@ -486,7 +577,6 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
     mpp_enc_cfg_set_s32(cfg, "rc:gop", p->gop_len ? p->gop_len : p->fps_out_num * 2);
 
     mpp_env_get_u32("gop_mode", &gop_mode, gop_mode);
-
     if (gop_mode) {
         mpp_enc_ref_cfg_init(&ref);
 
@@ -504,6 +594,19 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
         goto RET;
     }
 
+    if (cmd->type == MPP_VIDEO_CodingAVC || cmd->type == MPP_VIDEO_CodingHEVC) {
+        RcApiBrief rc_api_brief;
+        rc_api_brief.type = cmd->type;
+        rc_api_brief.name = (cmd->rc_mode == MPP_ENC_RC_MODE_SMTRC) ?
+                            "smart" : "default";
+
+        ret = mpi->control(ctx, MPP_ENC_SET_RC_API_CURRENT, &rc_api_brief);
+        if (ret) {
+            mpp_err("mpi control enc set rc api failed ret %d\n", ret);
+            goto RET;
+        }
+    }
+
     if (ref)
         mpp_enc_ref_cfg_deinit(&ref);
 
@@ -511,7 +614,7 @@ MPP_RET test_mpp_enc_cfg_setup(MpiEncMultiCtxInfo *info)
     {
         RK_U32 sei_mode;
 
-        mpp_env_get_u32("sei_mode", &sei_mode, MPP_ENC_SEI_MODE_ONE_FRAME);
+        mpp_env_get_u32("sei_mode", &sei_mode, MPP_ENC_SEI_MODE_DISABLE);
         p->sei_mode = sei_mode;
         ret = mpi->control(ctx, MPP_ENC_SET_SEI_CFG, &p->sei_mode);
         if (ret) {
@@ -603,7 +706,7 @@ MPP_RET test_mpp_run(MpiEncMultiCtxInfo *info)
             if (ret == MPP_NOK || feof(p->fp_input)) {
                 p->frm_eos = 1;
 
-                if (p->frame_num < 0 || p->frame_count < p->frame_num) {
+                if (p->frame_num < 0) {
                     clearerr(p->fp_input);
                     rewind(p->fp_input);
                     p->frm_eos = 0;
@@ -814,7 +917,8 @@ MPP_RET test_mpp_run(MpiEncMultiCtxInfo *info)
                     meta = mpp_packet_get_meta(packet);
                     RK_S32 temporal_id = 0;
                     RK_S32 lt_idx = -1;
-                    RK_S32 avg_qp = -1;
+                    RK_S32 avg_qp = -1, bps_rt = -1;
+                    RK_S32 use_lt_idx = -1;
 
                     if (MPP_OK == mpp_meta_get_s32(meta, KEY_TEMPORAL_ID, &temporal_id))
                         log_len += snprintf(log_buf + log_len, log_size - log_len,
@@ -826,7 +930,14 @@ MPP_RET test_mpp_run(MpiEncMultiCtxInfo *info)
 
                     if (MPP_OK == mpp_meta_get_s32(meta, KEY_ENC_AVERAGE_QP, &avg_qp))
                         log_len += snprintf(log_buf + log_len, log_size - log_len,
-                                            " qp %d", avg_qp);
+                                            " qp %2d", avg_qp);
+
+                    if (MPP_OK == mpp_meta_get_s32(meta, KEY_ENC_BPS_RT, &bps_rt))
+                        log_len += snprintf(log_buf + log_len, log_size - log_len,
+                                            " bps_rt %d", bps_rt);
+
+                    if (MPP_OK == mpp_meta_get_s32(meta, KEY_ENC_USE_LTR, &use_lt_idx))
+                        log_len += snprintf(log_buf + log_len, log_size - log_len, " vi");
                 }
 
                 mpp_log_q(quiet, "chn %d %s\n", chn, log_buf);

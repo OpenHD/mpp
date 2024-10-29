@@ -73,7 +73,7 @@ static void h265e_nal_encode(RK_U8 *dst, H265eNal *nal)
     mpp_writer_put_bits(&s, 0, 1); //forbidden_zero_bit
     mpp_writer_put_bits(&s, nal->i_type, 6);//nal_unit_type
     mpp_writer_put_bits(&s, 0, 6); //nuh_reserved_zero_6bits
-    mpp_writer_put_bits(&s, 1, 3); //nuh_temporal_id_plus1
+    mpp_writer_put_bits(&s, nal->temporal_id + 1, 3); //nuh_temporal_id_plus1
     dst += 2;
     dst = h265e_nal_escape_c(dst, src, end);
     size = (RK_S32)((dst - orig_dst) - 4);
@@ -494,12 +494,11 @@ static MPP_RET h265e_sps_write(H265eSps *sps, H265eStream *s)
     h265e_stream_write_ue_with_log(s, sps->m_quadtreeTUMaxDepthInter - 1,   "max_transform_hierarchy_depth_inter");
     h265e_stream_write_ue_with_log(s, sps->m_quadtreeTUMaxDepthIntra - 1,   "max_transform_hierarchy_depth_intra");
     h265e_stream_write1_with_log(s, sps->m_scalingListEnabledFlag ? 1 : 0,       "scaling_list_enabled_flag");
-    if (sps->m_scalingListEnabledFlag) {
-        h265e_stream_write1_with_log(s, sps->m_scalingListPresentFlag ? 1 : 0, "sps_scaling_list_data_present_flag");
-        if (sps->m_scalingListPresentFlag) {
-            mpp_log("to do m_scalingListPresentFlag");
-            ;//codeScalingList(m_slice->getScalingList()); //todo only support default
-        }
+    if (sps->m_scalingListEnabledFlag == 1)
+        h265e_stream_write1_with_log(s, 0, "sps_scaling_list_data_present_flag");
+    else if (sps->m_scalingListEnabledFlag == 2) {
+        //TODO:
+        mpp_err_f("m_scalingListEnabledFlag == 2 not supported yet\n");
     }
     h265e_stream_write1_with_log(s, sps->m_useAMP ? 1 : 0, "amp_enabled_flag");
     h265e_stream_write1_with_log(s, sps->m_bUseSAO ? 1 : 0, "sample_adaptive_offset_enabled_flag");
@@ -651,6 +650,8 @@ void h265e_nal_start(H265eExtraInfo *out, RK_S32 i_type,
     /* NOTE: consistent with stream_init */
     nal->p_payload = &s->buf[s->enc_stream.byte_cnt];
     nal->i_padding = 0;
+
+    nal->temporal_id = out->temporal_id;
 }
 
 void h265e_nal_end(H265eExtraInfo *out)
@@ -711,8 +712,8 @@ MPP_RET h265e_set_extra_info(H265eCtx *ctx)
 
     h265e_dbg_func("enter\n");
     info->nal_num = 0;
+    info->temporal_id = 0;
     h265e_stream_reset(&info->stream);
-
 
     h265e_nal_start(info, NAL_VPS, H265_NAL_PRIORITY_HIGHEST);
     h265e_set_vps(ctx, vps);

@@ -88,7 +88,7 @@ void mpp_data_update(MppData *p, RK_S32 val)
         p->len++;
 }
 
-RK_S32 mpp_data_avg(MppData *p, RK_S32 len, RK_S32 num, RK_S32 denorm)
+RK_S32 mpp_data_avg(MppData *p, RK_S32 len, RK_S32 num, RK_S32 denom)
 {
     mpp_assert(p);
 
@@ -102,7 +102,7 @@ RK_S32 mpp_data_avg(MppData *p, RK_S32 len, RK_S32 num, RK_S32 denorm)
     if (len < 0 || len > p->len)
         len = p->len;
 
-    if (num == denorm) {
+    if (num == denom) {
         i = len;
         while (i--) {
             if (pos)
@@ -114,9 +114,9 @@ RK_S32 mpp_data_avg(MppData *p, RK_S32 len, RK_S32 num, RK_S32 denorm)
         }
     } else {
         /* This case is not used so far, but may be useful in the future */
-        mpp_assert(num > denorm);
+        mpp_assert(num > denom);
         RK_S32 acc_num = num;
-        RK_S32 acc_denorm = denorm;
+        RK_S32 acc_denom = denom;
 
         i = len - 1;
         sum = p->val[--pos];
@@ -126,9 +126,9 @@ RK_S32 mpp_data_avg(MppData *p, RK_S32 len, RK_S32 num, RK_S32 denorm)
             else
                 pos = p->len - 1;
 
-            sum += p->val[pos] * acc_num / acc_denorm;
+            sum += p->val[pos] * acc_num / acc_denom;
             acc_num *= num;
-            acc_denorm *= denorm;
+            acc_denom *= denom;
         }
     }
     return DIV(sum, len);
@@ -155,7 +155,7 @@ void mpp_pid_set_param(MppPIDCtx *ctx, RK_S32 coef_p, RK_S32 coef_i, RK_S32 coef
                   ctx, coef_p, coef_i, coef_d, div, len);
 }
 
-void mpp_pid_update(MppPIDCtx *ctx, RK_S32 val)
+void mpp_pid_update(MppPIDCtx *ctx, RK_S32 val, RK_S32 is_reset)
 {
     mpp_rc_dbg_rc("RC: pid ctx %p update val %d\n", ctx, val);
     mpp_rc_dbg_rc("RC: pid ctx %p before update P %d I %d D %d\n", ctx, ctx->p, ctx->i, ctx->d);
@@ -169,7 +169,7 @@ void mpp_pid_update(MppPIDCtx *ctx, RK_S32 val)
     /*
      * pid control is a short time control, it needs periodically reset
      */
-    if (ctx->count >= ctx->len)
+    if (is_reset && ctx->count >= ctx->len)
         mpp_pid_reset(ctx);
 }
 

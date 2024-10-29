@@ -456,6 +456,10 @@ static MPP_RET dpb_mark_malloc(H264dVideoCtx_t *p_Vid, H264_StorePic_t *dec_pic)
 
                 p_Dec->cfg->base.out_fmt = fmt;
                 out_fmt = fmt;
+            } else if (MPP_FRAME_FMT_IS_TILE(out_fmt)) {
+                fmt |= (out_fmt & MPP_FRAME_TILE_FLAG);
+                p_Dec->cfg->base.out_fmt = fmt;
+                out_fmt = fmt;
             }
             impl->fmt = fmt;
 
@@ -525,7 +529,7 @@ static MPP_RET dpb_mark_malloc(H264dVideoCtx_t *p_Vid, H264_StorePic_t *dec_pic)
             }
 
             if (p_Dec->cfg->base.enable_thumbnail && p_Dec->hw_info->cap_down_scale)
-                mpp_frame_set_thumbnail_en(p_Dec->curframe, 1);
+                mpp_frame_set_thumbnail_en(p_Dec->curframe, p_Dec->cfg->base.enable_thumbnail);
             else
                 mpp_frame_set_thumbnail_en(p_Dec->curframe, 0);
 
@@ -542,11 +546,19 @@ static MPP_RET dpb_mark_malloc(H264dVideoCtx_t *p_Vid, H264_StorePic_t *dec_pic)
                     impl->color_primaries = p->colour_primaries;
                     impl->color_trc = p->transfer_characteristics;
                     impl->colorspace = p->matrix_coefficients;
+                    if (impl->color_trc == MPP_FRAME_TRC_SMPTEST2084)
+                        impl->fmt |= MPP_FRAME_HDR;
                 } else {
                     impl->color_primaries = MPP_FRAME_PRI_UNSPECIFIED;
                     impl->color_trc = MPP_FRAME_TRC_UNSPECIFIED;
                     impl->colorspace = MPP_FRAME_SPC_UNSPECIFIED;
                 }
+            }
+
+            if (p_Vid->p_Cur->hdr_dynamic && p_Vid->p_Cur->hdr_dynamic_meta) {
+                impl->hdr_dynamic_meta = p_Vid->p_Cur->hdr_dynamic_meta;
+                p_Vid->p_Cur->hdr_dynamic = 0;
+                impl->fmt |= MPP_FRAME_HDR;
             }
 
             impl->poc = dec_pic->poc;
@@ -632,6 +644,7 @@ static MPP_RET alloc_decpic(H264_SLICE_t *currSlice)
     H264dVideoCtx_t *p_Vid = currSlice->p_Vid;
     H264_SPS_t *active_sps = p_Vid->active_sps;
     H264_DpbBuf_t *p_Dpb = currSlice->p_Dpb;
+    H264_DecCtx_t *p_Dec = p_Vid->p_Dec;
 
     dec_pic = alloc_storable_picture(p_Vid, currSlice->structure);
     MEM_CHECK(ret, dec_pic);
@@ -714,7 +727,9 @@ static MPP_RET alloc_decpic(H264_SLICE_t *currSlice)
     dec_pic->combine_flag = get_field_dpb_combine_flag(p_Dpb->last_picture, dec_pic);
     /* malloc dpb_memory */
     FUN_CHECK(ret = dpb_mark_malloc(p_Vid, dec_pic));
-    FUN_CHECK(ret = check_dpb_discontinuous(p_Vid->last_pic, dec_pic, currSlice));
+    if (!p_Dec->cfg->base.disable_dpb_chk) {
+        FUN_CHECK(ret = check_dpb_discontinuous(p_Vid->last_pic, dec_pic, currSlice));
+    }
     dec_pic->mem_malloc_type = Mem_Malloc;
     dec_pic->colmv_no_used_flag = 0;
     p_Vid->dec_pic = dec_pic;
@@ -1130,7 +1145,7 @@ static MPP_RET init_lists_p_slice_mvc(H264_SLICE_t *currSlice)
     }
 
     currSlice->listXsizeP[1] = 0;
-    if (currSlice->mvcExt.valid && currSlice->svc_extension_flag == 0) {
+    if (currSlice->mvcExt.valid && p_Vid->active_mvc_sps_flag && currSlice->svc_extension_flag == 0) {
         RK_S32 curr_layer_id = currSlice->layer_id;
         currSlice->fs_listinterview0 = mpp_calloc(H264_FrameStore_t*, p_Dpb->size);
         MEM_CHECK(ret, currSlice->fs_listinterview0);
@@ -1297,7 +1312,7 @@ static MPP_RET init_lists_b_slice_mvc(H264_SLICE_t *currSlice)
             currSlice->listB[1][1] = tmp_s;
         }
     }
-    if (currSlice->mvcExt.valid && currSlice->svc_extension_flag == 0) {
+    if (currSlice->mvcExt.valid && p_Vid->active_mvc_sps_flag && currSlice->svc_extension_flag == 0) {
         RK_S32 curr_layer_id = currSlice->layer_id;
         // B-Slice
         currSlice->fs_listinterview0 = mpp_calloc(H264_FrameStore_t*, p_Dpb->size);
@@ -1541,12 +1556,6 @@ static void check_refer_picture_lists(H264_SLICE_t *currSlice)
             p_err->cur_err_flag |= check_ref_dbp_err(p_Dec, p_Dec->refpic_info_b[1], active_l1) ? 1 : 0;
             H264D_DBG(H264D_DBG_DPB_REF_ERR, "list1 dpb: cur_err_flag=%d, pps_refs=%d, over_flag=%d, num_ref_l1=%d\n",
                       p_err->cur_err_flag, pps_refs, over_flag, active_l1);
-        }
-        //!< B_SLICE only has one refer
-        if ((currSlice->active_sps->vui_seq_parameters.num_reorder_frames > 1)
-            && (currSlice->p_Dpb->ref_frames_in_buffer < 2)) {
-            p_err->cur_err_flag |= 1;
-            H264D_DBG(H264D_DBG_DPB_REF_ERR, "[DPB_REF_ERR] error, B frame only has one refer");
         }
     }
 

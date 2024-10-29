@@ -43,6 +43,7 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
     MppEncRcCfg *rc_cfg = &ctrlCfg->cfg->rc;
     MppEncPrepCfg *prep = &ctrlCfg->cfg->prep;
     MppEncH265Cfg *h265 = NULL;
+    RockchipSocType soc_type;
 
     if (ctx == NULL) {
         mpp_err_f("invalid NULL ctx\n");
@@ -87,16 +88,13 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
     h265->level = 120;
     h265->const_intra_pred = 0;           /* constraint intra prediction flag */
 
-    if (mpp_get_soc_type() == ROCKCHIP_SOC_RK3528) {
-        h265->ctu_size = 32;
+    soc_type = mpp_get_soc_type();
+    if (soc_type == ROCKCHIP_SOC_RK3528 || soc_type == ROCKCHIP_SOC_RK3576)
         h265->max_cu_size = 32;
-        h265->tmvp_enable = 0;
-    } else {
-        h265->ctu_size = 64;
+    else
         h265->max_cu_size = 64;
-        h265->tmvp_enable = 1;
-    }
 
+    h265->tmvp_enable = 0;
     h265->amp_enable = 0;
     h265->sao_enable = 1;
 
@@ -112,6 +110,18 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
     h265->merge_cfg.merge_left_flag = 1;
     h265->merge_cfg.merge_up_flag = 1;
     p->cfg->tune.scene_mode = MPP_ENC_SCENE_MODE_DEFAULT;
+    p->cfg->tune.lambda_idx_i = 2;
+    p->cfg->tune.lambda_idx_p = 4;
+    p->cfg->tune.anti_flicker_str = 2;
+    p->cfg->tune.atr_str_i = 3;
+    p->cfg->tune.atr_str_p = 0;
+    p->cfg->tune.atl_str = 1;
+    p->cfg->tune.sao_str_i = 0;
+    p->cfg->tune.sao_str_p = 1;
+    p->cfg->tune.deblur_str = 3;
+    p->cfg->tune.deblur_en = 0;
+    p->cfg->tune.rc_container = 0;
+    p->cfg->tune.vmaf_opt = 0;
 
     /*
      * default prep:
@@ -149,10 +159,10 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
     rc_cfg->bps_min = rc_cfg->bps_target * 3 / 4;
     rc_cfg->fps_in_flex = 0;
     rc_cfg->fps_in_num = 30;
-    rc_cfg->fps_in_denorm = 1;
+    rc_cfg->fps_in_denom = 1;
     rc_cfg->fps_out_flex = 0;
     rc_cfg->fps_out_num = 30;
-    rc_cfg->fps_out_denorm = 1;
+    rc_cfg->fps_out_denom = 1;
     rc_cfg->gop = 60;
     rc_cfg->max_reenc_times = 1;
     rc_cfg->max_i_prop = 30;
@@ -169,7 +179,7 @@ static MPP_RET h265e_init(void *ctx, EncImplCfg *ctrlCfg)
     rc_cfg->fqp_min_p = INT_MAX;
     rc_cfg->fqp_max_i = INT_MAX;
     rc_cfg->fqp_max_p = INT_MAX;
-
+    rc_cfg->cu_qp_delta_depth = 0;
     INIT_LIST_HEAD(&p->rc_list);
 
     h265e_dbg_func("leave ctx %p\n", ctx);
@@ -226,9 +236,48 @@ static MPP_RET h265e_gen_hdr(void *ctx, MppPacket pkt)
 
 static MPP_RET h265e_start(void *ctx, HalEncTask *task)
 {
-    H265eCtx *p = (H265eCtx *)ctx;
-    (void) p;
     h265e_dbg_func("enter\n");
+
+    if (mpp_frame_has_meta(task->frame)) {
+        MppEncRefFrmUsrCfg *frm_cfg = task->frm_cfg;
+        EncRcForceCfg *rc_force = &task->rc_task->force;
+        MppMeta meta = mpp_frame_get_meta(task->frame);
+        RK_S32 force_lt_idx = -1;
+        RK_S32 force_use_lt_idx = -1;
+        RK_S32 force_frame_qp = -1;
+        RK_S32 base_layer_pid = -1;
+
+        mpp_meta_get_s32(meta, KEY_ENC_MARK_LTR, &force_lt_idx);
+        mpp_meta_get_s32(meta, KEY_ENC_USE_LTR, &force_use_lt_idx);
+        mpp_meta_get_s32(meta, KEY_ENC_FRAME_QP, &force_frame_qp);
+        mpp_meta_get_s32(meta, KEY_ENC_BASE_LAYER_PID, &base_layer_pid);
+
+        if (force_lt_idx >= 0) {
+            frm_cfg->force_flag |= ENC_FORCE_LT_REF_IDX;
+            frm_cfg->force_lt_idx = force_lt_idx;
+        }
+
+        if (force_use_lt_idx >= 0) {
+            frm_cfg->force_flag |= ENC_FORCE_REF_MODE;
+            frm_cfg->force_ref_mode = REF_TO_LT_REF_IDX;
+            frm_cfg->force_ref_arg = force_use_lt_idx;
+        }
+
+        if (force_frame_qp >= 0) {
+            rc_force->force_flag = ENC_RC_FORCE_QP;
+            rc_force->force_qp = force_frame_qp;
+        } else {
+            rc_force->force_flag &= (~ENC_RC_FORCE_QP);
+            rc_force->force_qp = -1;
+        }
+
+        if (base_layer_pid >= 0) {
+            H265eCtx *p = (H265eCtx *)ctx;
+            MppEncH265Cfg *h265 = &p->cfg->codec.h265;
+
+            h265->base_layer_pid = base_layer_pid;
+        }
+    }
 
     /*
      * Step 2: Fps conversion
@@ -269,16 +318,36 @@ static MPP_RET h265e_proc_dpb(void *ctx, HalEncTask *task)
 static MPP_RET h265e_proc_hal(void *ctx, HalEncTask *task)
 {
     H265eCtx *p = (H265eCtx *)ctx;
-    EncFrmStatus *frm = &task->rc_task->frm;
-    MppPacket packet = task->packet;
-    MppMeta meta = mpp_packet_get_meta(packet);
+    MppEncH265Cfg *h265 = &p->cfg->codec.h265;
 
     if (ctx == NULL) {
         mpp_err_f("invalid NULL ctx\n");
         return MPP_ERR_NULL_PTR;
     }
 
-    mpp_meta_set_s32(meta, KEY_TEMPORAL_ID, frm->temporal_id);
+    /* check max temporal layer id */
+    {
+        MppEncCpbInfo *cpb_info = mpp_enc_ref_cfg_get_cpb_info(p->cfg->ref_cfg);
+        RK_S32 cpb_max_tid = cpb_info->max_st_tid;
+        RK_S32 cfg_max_tid = h265->max_tid;
+
+        if (cpb_max_tid != cfg_max_tid) {
+            mpp_log("max tid is update to match cpb %d -> %d\n",
+                    cfg_max_tid, cpb_max_tid);
+            h265->max_tid = cpb_max_tid;
+        }
+    }
+
+    if (h265->max_tid) {
+        EncFrmStatus *frm = &task->rc_task->frm;
+        MppPacket packet = task->packet;
+        MppMeta meta = mpp_packet_get_meta(packet);
+
+        mpp_meta_set_s32(meta, KEY_TEMPORAL_ID, frm->temporal_id);
+        if (!frm->is_non_ref && frm->is_lt_ref)
+            mpp_meta_set_s32(meta, KEY_LONG_REF_IDX, frm->lt_idx);
+    }
+
     h265e_dbg_func("enter ctx %p \n", ctx);
 
     h265e_syntax_fill(ctx);
@@ -295,6 +364,7 @@ static MPP_RET h265e_proc_enc_skip(void *ctx, HalEncTask *task)
 {
     H265eCtx *p = (H265eCtx *)ctx;
     MppPacket pkt = task->packet;
+    H265eSyntax_new *syntax = &p->syntax;
     RK_U8 *ptr = mpp_packet_get_pos(pkt);
     RK_U32 offset = mpp_packet_get_length(pkt);
     RK_U32 len    = mpp_packet_get_size(pkt) - offset;
@@ -306,6 +376,7 @@ static MPP_RET h265e_proc_enc_skip(void *ctx, HalEncTask *task)
     new_length = h265e_code_slice_skip_frame(ctx, p->slice, ptr, len);
     task->length = new_length;
     task->rc_task->info.bit_real = 8 * new_length;
+    syntax->pre_ref_idx = syntax->sp.recon_pic.slot_idx;
     mpp_packet_add_segment_info(pkt, NAL_TRAIL_R, offset, new_length);
 
     h265e_dbg_func("leave\n");
@@ -432,7 +503,7 @@ static MPP_RET h265e_proc_prep_cfg(MppEncPrepCfg *dst, MppEncPrepCfg *src)
 
     if (MPP_FRAME_FMT_IS_FBC(dst->format) && (dst->mirroring || dst->rotation || dst->flip)) {
         // rk3588 rkvenc support fbc with rotation
-        if (!strstr(mpp_get_soc_name(), "rk3588")) {
+        if (mpp_get_soc_type() != ROCKCHIP_SOC_RK3588) {
             mpp_err("invalid cfg fbc data no support mirror %d, rotation %d, or flip %d",
                     dst->mirroring, dst->rotation, dst->flip);
             ret = MPP_ERR_VALUE;
@@ -478,6 +549,7 @@ static MPP_RET h265e_proc_h265_cfg(MppEncH265Cfg *dst, MppEncH265Cfg *src)
         }
 
         dst->level = src->level;
+        dst->tier = (src->level >= 120) ? src->tier : 0;
     }
 
     if (change & MPP_ENC_H265_CFG_CU_CHANGE) {
@@ -526,6 +598,38 @@ static MPP_RET h265e_proc_h265_cfg(MppEncH265Cfg *dst, MppEncH265Cfg *src)
 
     if (change & MPP_ENC_H265_CFG_TILE_LPFACS_CHANGE)
         dst->lpf_acs_tile_disable = src->lpf_acs_tile_disable;
+
+    if ((change & MPP_ENC_H265_CFG_CHANGE_CONST_INTRA) &&
+        (dst->const_intra_pred != src->const_intra_pred)) {
+        RockchipSocType soc_type = mpp_get_soc_type();
+
+        if (soc_type != ROCKCHIP_SOC_RK3576 && src->const_intra_pred == 1) {
+            dst->const_intra_pred = 0;
+
+            mpp_log("warning: Only rk3576's HEVC encoder support constraint intra prediction flag = 1.");
+        } else
+            dst->const_intra_pred = src->const_intra_pred;
+
+        dst->change |= MPP_ENC_H265_CFG_CHANGE_CONST_INTRA;
+    }
+
+    if ((change & MPP_ENC_H265_CFG_CHANGE_MAX_LTR) &&
+        (dst->max_ltr_frames != src->max_ltr_frames)) {
+        dst->max_ltr_frames = src->max_ltr_frames;
+        dst->change |= MPP_ENC_H265_CFG_CHANGE_MAX_LTR;
+    }
+
+    if ((change & MPP_ENC_H265_CFG_CHANGE_MAX_TID) &&
+        (dst->max_tid != src->max_tid)) {
+        dst->max_tid = src->max_tid;
+        dst->change |= MPP_ENC_H265_CFG_CHANGE_MAX_TID;
+    }
+
+    if ((change & MPP_ENC_H265_CFG_CHANGE_BASE_LAYER_PID) &&
+        (dst->base_layer_pid != src->base_layer_pid)) {
+        dst->base_layer_pid = src->base_layer_pid;
+        dst->change |= MPP_ENC_H265_CFG_CHANGE_BASE_LAYER_PID;
+    }
 
     /*
      * NOTE: use OR here for avoiding overwrite on multiple config

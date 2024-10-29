@@ -24,6 +24,7 @@
 #include "mpp_debug.h"
 #include "mpp_frame.h"
 #include "mpp_common.h"
+#include "mpp_buffer_impl.h"
 
 #include "jpegd_syntax.h"
 #include "hal_jpegd_common.h"
@@ -82,8 +83,6 @@ MPP_RET jpegd_write_rkv_htbl(JpegdHalCtx *ctx, JpegdSyntax *jpegd_syntax)
     MPP_RET ret = MPP_OK;
 
     JpegdSyntax *s = jpegd_syntax;
-    AcTable *ac_ptr0 = NULL, *ac_ptr1 = NULL;
-    DcTable *dc_ptr0 = NULL, *dc_ptr1 = NULL;
     void * htbl_ptr[6] = {NULL};
     RK_U32 i, j, k = 0;
     RK_U8 *p_htbl_value = (RK_U8 *)mpp_buffer_get_ptr(ctx->pTableBase) + RKD_HUFFMAN_VALUE_TBL_OFFSET;
@@ -99,30 +98,14 @@ MPP_RET jpegd_write_rkv_htbl(JpegdHalCtx *ctx, JpegdSyntax *jpegd_syntax)
     AcTable *ac_ptr;
     DcTable *dc_ptr;
 
-    if (s->ac_index[0] == HUFFMAN_TABLE_ID_ZERO) {
-        /* Luma's AC uses Huffman table zero */
-        ac_ptr0 = &(s->ac_table[HUFFMAN_TABLE_ID_ZERO]);
-        ac_ptr1 = &(s->ac_table[HUFFMAN_TABLE_ID_ONE]);
-    } else {
-        ac_ptr0 = &(s->ac_table[HUFFMAN_TABLE_ID_ONE]);
-        ac_ptr1 = &(s->ac_table[HUFFMAN_TABLE_ID_ZERO]);
-    }
+    htbl_ptr[0] = &s->dc_table[s->dc_index[0]];
+    htbl_ptr[1] = &s->ac_table[s->ac_index[0]];
 
-    if (s->dc_index[0] == HUFFMAN_TABLE_ID_ZERO) {
-        /* Luma's DC uses Huffman table zero */
-        dc_ptr0 = &(s->dc_table[HUFFMAN_TABLE_ID_ZERO]);
-        dc_ptr1 = &(s->dc_table[HUFFMAN_TABLE_ID_ONE]);
-    } else {
-        dc_ptr0 = &(s->dc_table[HUFFMAN_TABLE_ID_ONE]);
-        dc_ptr1 = &(s->dc_table[HUFFMAN_TABLE_ID_ZERO]);
-    }
+    htbl_ptr[2] = &s->dc_table[s->dc_index[1]];
+    htbl_ptr[3] = &s->ac_table[s->ac_index[1]];
 
-    htbl_ptr[0] = dc_ptr0;
-    htbl_ptr[1] = ac_ptr0;
-    htbl_ptr[2] = dc_ptr1;
-    htbl_ptr[3] = ac_ptr1;
-    htbl_ptr[4] = dc_ptr1;
-    htbl_ptr[5] = ac_ptr1;
+    htbl_ptr[4] = htbl_ptr[2];
+    htbl_ptr[5] = htbl_ptr[3];
 
     for (k = 0; k < s->nb_components; k++) {
         dc_ptr = (DcTable *)htbl_ptr[k * 2];
@@ -254,13 +237,6 @@ MPP_RET hal_jpegd_rkv_init(void *hal, MppHalCfg *cfg)
     ctx->dec_cb       = cfg->dec_cb;
     ctx->packet_slots = cfg->packet_slots;
     ctx->frame_slots  = cfg->frame_slots;
-    ctx->dev_type     = VPU_CLIENT_JPEG_DEC;
-
-    ret = mpp_dev_init(&ctx->dev, ctx->dev_type);
-    if (ret) {
-        mpp_err("mpp_dev_init failed. ret: %d\n", ret);
-        return ret;
-    }
 
     /* allocate regs buffer */
     if (ctx->regs == NULL) {
@@ -281,17 +257,12 @@ MPP_RET hal_jpegd_rkv_init(void *hal, MppHalCfg *cfg)
         }
     }
 
-    ret = mpp_buffer_get(ctx->group, &ctx->frame_buf,
-                         JPEGD_STREAM_BUFF_SIZE);
-    if (ret) {
-        mpp_err_f("Get frame buffer failed ret %d\n", ret);
-        return ret;
-    }
-
     ret = mpp_buffer_get(ctx->group, &ctx->pTableBase, RKD_TABLE_SIZE);
     if (ret) {
         mpp_err_f("Get table buffer failed, ret %d\n", ret);
     }
+
+    mpp_buffer_attach_dev(ctx->pTableBase, ctx->dev);
 
     jpegd_dbg_func("exit\n");
     return ret;
@@ -363,6 +334,11 @@ static MPP_RET setup_output_fmt(JpegdHalCtx *ctx, JpegdSyntax *syntax, RK_S32 ou
         ctx->output_fmt = s->output_fmt;
     }
 
+    if (MPP_FRAME_FMT_IS_TILE(ctx->output_fmt))
+        regs->reg2_sys.dec_out_sequence = OUTPUT_TILE;
+    else
+        regs->reg2_sys.dec_out_sequence = OUTPUT_RASTER;
+
     jpegd_dbg_hal("convert format %d to format %d\n", s->output_fmt, ctx->output_fmt);
 
     if ((s->yuv_mode == YUV_MODE_420 && regs->reg2_sys.yuv_out_format == YUV_OUT_FMT_NO_TRANS) ||
@@ -392,8 +368,7 @@ static MPP_RET jpegd_gen_regs(JpegdHalCtx *ctx, JpegdSyntax *syntax)
     regs->reg3_pic_size.pic_width_m1 = s->width - 1;
     regs->reg3_pic_size.pic_height_m1 = s->height - 1;
 
-    if (s->sample_precision != DCT_SAMPLE_PRECISION_8 || (s->htbl_entry & 0x0f) != 0x0f
-        || s->qtbl_entry > TBL_ENTRY_3)
+    if (s->sample_precision != DCT_SAMPLE_PRECISION_8 || s->qtbl_entry > TBL_ENTRY_3)
         return MPP_NOK;
 
     regs->reg4_pic_fmt.pixel_depth = BIT_DEPTH_8;
@@ -402,8 +377,8 @@ static MPP_RET jpegd_gen_regs(JpegdHalCtx *ctx, JpegdSyntax *syntax)
     }
 
     if (s->nb_components > 1) {
-        regs->reg4_pic_fmt.qtables_sel = (s->qtbl_entry > 1) ? s->qtbl_entry : TBL_ENTRY_2;
-        regs->reg4_pic_fmt.htables_sel = (s->htbl_entry > 0x0f) ? s->htbl_entry : TBL_ENTRY_2;
+        regs->reg4_pic_fmt.qtables_sel = (s->qtbl_entry > 1) ? TBL_ENTRY_3 : TBL_ENTRY_2;
+        regs->reg4_pic_fmt.htables_sel = (s->htbl_entry > 0x0f) ? TBL_ENTRY_3 : TBL_ENTRY_2;
     } else {
         regs->reg4_pic_fmt.qtables_sel = TBL_ENTRY_1;
         regs->reg4_pic_fmt.htables_sel = TBL_ENTRY_1;
@@ -478,8 +453,42 @@ static MPP_RET jpegd_gen_regs(JpegdHalCtx *ctx, JpegdSyntax *syntax)
 
     y_virstride = y_hor_stride * out_height;
     if (regs->reg2_sys.dec_out_sequence == OUTPUT_TILE) {
-        y_hor_stride <<= 3;
-        uv_hor_virstride <<= 3;
+        if (mpp_get_soc_type() == ROCKCHIP_SOC_RK3576) {
+            switch (regs->reg2_sys.yuv_out_format) {
+            case YUV_OUT_FMT_2_YUYV:
+                y_hor_stride = y_hor_stride * 4 * 2;
+                break;
+            case YUV_OUT_FMT_NO_TRANS:
+                switch (regs->reg4_pic_fmt.jpeg_mode) {
+                case YUV_MODE_422:
+                case YUV_MODE_440:
+                    y_hor_stride = y_hor_stride * 4 * 2;
+                    break;
+                case YUV_MODE_444:
+                    y_hor_stride = y_hor_stride * 4 * 3;
+                    break;
+                case YUV_MODE_411:
+                case YUV_MODE_420:
+                    y_hor_stride = y_hor_stride * 4 * 3 / 2;
+                    break;
+                case YUV_MODE_400:
+                    y_hor_stride = y_hor_stride * 4;
+                    break;
+                default:
+                    return MPP_NOK;
+                    break;
+                }
+                break;
+            case YUV_OUT_FMT_2_NV12:
+                y_hor_stride = y_hor_stride * 4 * 3 / 2;
+                break;
+            }
+
+            uv_hor_virstride = 0;
+        } else {
+            y_hor_stride <<= 3;
+            uv_hor_virstride <<= 3;
+        }
     }
 
     regs->reg5_hor_virstride.y_hor_virstride = y_hor_stride & 0xffff;
@@ -584,14 +593,6 @@ MPP_RET hal_jpegd_rkv_deinit(void *hal)
         ctx->dev = NULL;
     }
 
-    if (ctx->frame_buf) {
-        ret = mpp_buffer_put(ctx->frame_buf);
-        if (ret) {
-            mpp_err_f("put buffer failed\n");
-            return ret;
-        }
-    }
-
     if (ctx->pTableBase) {
         ret = mpp_buffer_put(ctx->pTableBase);
         if (ret) {
@@ -656,6 +657,7 @@ MPP_RET hal_jpegd_rkv_gen_regs(void *hal,  HalTaskInfo *syn)
     setup_output_fmt(ctx, s, syn->dec.output);
 
     ret = jpegd_gen_regs(ctx, s);
+    mpp_buffer_sync_end(strm_buf);
     mpp_buffer_sync_end(ctx->pTableBase);
 
     if (ret != MPP_OK) {
@@ -818,29 +820,33 @@ MPP_RET hal_jpegd_rkv_control(void *hal, MpiCmd cmd_type, void *param)
     case MPP_DEC_SET_OUTPUT_FORMAT: {
         MppFrameFormat output_fmt = *((MppFrameFormat *)param);
         RockchipSocType soc_type = mpp_get_soc_type();
+        MppFrameFormat frm_fmt = output_fmt & MPP_FRAME_FMT_MASK;
 
-        ret = MPP_NOK;
+        if (MPP_FRAME_FMT_IS_FBC(output_fmt)) {
+            ret = MPP_ERR_VALUE;
+        }
 
-        switch ((RK_S32)output_fmt) {
-        case MPP_FMT_YUV420SP :
-        case MPP_FMT_YUV420SP_VU :
-        case MPP_FMT_YUV422_YUYV :
-        case MPP_FMT_YUV422_YVYU :
-        case MPP_FMT_RGB888 : {
-            ret = MPP_OK;
-        } break;
-        case (MPP_FMT_RGB565) : { // rgb565be
-            if (soc_type >= ROCKCHIP_SOC_RK3588 &&
-                soc_type < ROCKCHIP_SOC_BUTT)
-                ret = MPP_OK;
-        } break;
-        case (MPP_FMT_BGR565 | MPP_FRAME_FMT_LE_MASK) : { // bgr565le
-            if (soc_type < ROCKCHIP_SOC_RK3588 &&
-                soc_type > ROCKCHIP_SOC_AUTO)
-                ret = MPP_OK;
-        } break;
-        default:
-            break;
+        if (MPP_FRAME_FMT_IS_TILE(output_fmt)) {
+            if (soc_type < ROCKCHIP_SOC_RK3576 || MPP_FRAME_FMT_IS_RGB(output_fmt)) {
+                ret = MPP_ERR_VALUE;
+            }
+        }
+
+        if (MPP_FRAME_FMT_IS_RGB(output_fmt)) {
+            if (soc_type == ROCKCHIP_SOC_RK3576) {
+                ret = MPP_ERR_VALUE;
+            } else if (soc_type >= ROCKCHIP_SOC_RK3588) {
+                // only rgb565be and rgb888 supported
+                if (output_fmt != MPP_FMT_RGB555 && output_fmt != MPP_FMT_RGB888 ) {
+                    ret = MPP_ERR_VALUE;
+                }
+            } else {
+                // only bgr565le and rgb 888 supported
+                if (frm_fmt != (MPP_FMT_BGR565 | MPP_FRAME_FMT_LE_MASK)
+                    && output_fmt != MPP_FMT_RGB888) {
+                    ret = MPP_ERR_VALUE;
+                }
+            }
         }
 
         if (ret) {

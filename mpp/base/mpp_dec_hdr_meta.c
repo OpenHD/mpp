@@ -28,7 +28,7 @@ static RK_U32 hdr_get_offset_from_frame(MppFrame frame)
     return mpp_frame_get_buf_size(frame);
 }
 
-void fill_hdr_meta_to_frame(MppFrame frame, HdrCodecType codec_type)
+void fill_hdr_meta_to_frame(MppFrame frame, MppCodingType in_type)
 {
     RK_U32 off = hdr_get_offset_from_frame(frame);
     MppBuffer buf = mpp_frame_get_buffer(frame);
@@ -43,12 +43,20 @@ void fill_hdr_meta_to_frame(MppFrame frame, HdrCodecType codec_type)
     MppMeta meta = NULL;
     RK_U32 max_size = mpp_buffer_get_size(buf);
     RK_U32 static_size, dynamic_size = 0, total_size = 0;
+    HdrCodecType codec_type = HDR_CODEC_UNSPECIFIED;
 
     if (!ptr || !buf) {
         mpp_err_f("buf is null!\n");
         return;
     }
 
+    if (mpp_frame_get_thumbnail_en(frame) == MPP_FRAME_THUMBNAIL_ONLY) {
+        // only for 8K thumbnail downscale to 4K 8bit mode
+        RK_U32 downscale_width = mpp_frame_get_width(frame) / 2;
+        RK_U32 downscale_height = mpp_frame_get_height(frame) / 2;
+
+        off = downscale_width * downscale_height * 3 / 2;
+    }
     off = MPP_ALIGN(off, SZ_4K);
 
     static_size = sizeof(RkMetaHdrHeader) + sizeof(HdrStaticMeta);
@@ -70,6 +78,22 @@ void fill_hdr_meta_to_frame(MppFrame frame, HdrCodecType codec_type)
     hdr_static_meta_header->magic = HDR_META_MAGIC;
     hdr_static_meta_header->size = static_size;
     hdr_static_meta_header->message_index = msg_idx++;
+
+    switch (in_type) {
+    case MPP_VIDEO_CodingAVS2 : {
+        codec_type = HDR_AVS2;
+    } break;
+    case MPP_VIDEO_CodingHEVC : {
+        codec_type = HDR_HEVC;
+    } break;
+    case MPP_VIDEO_CodingAVC : {
+        codec_type = HDR_H264;
+    } break;
+    case MPP_VIDEO_CodingAV1 : {
+        codec_type = HDR_AV1;
+    } break;
+    default : break;
+    }
 
     /* For payload identification */
     hdr_static_meta_header->hdr_payload_type = STATIC;
@@ -97,15 +121,26 @@ void fill_hdr_meta_to_frame(MppFrame frame, HdrCodecType codec_type)
          *  hevc trc = 18
          *  avs trc = 14
          * hdr10:
-         *  hevc trc = 16
+         *  hevc/h264 trc = 16
          *  avs trc = 12
          */
-        if ((codec_type == HDR_HEVC && static_meta->color_trc == MPP_FRAME_TRC_ARIB_STD_B67) ||
-            (codec_type == HDR_AVS2 && static_meta->color_trc == MPP_FRAME_TRC_BT2020_10))
-            hdr_format = HLG;
-        if ((codec_type == HDR_HEVC && static_meta->color_trc == MPP_FRAME_TRC_SMPTEST2084) ||
-            (codec_type == HDR_AVS2 && static_meta->color_trc == MPP_FRAME_TRC_BT1361_ECG))
-            hdr_format = HDR10;
+        switch (codec_type) {
+        case HDR_HEVC :
+        case HDR_H264 : {
+            if (static_meta->color_trc == MPP_FRAME_TRC_ARIB_STD_B67)
+                hdr_format = HLG;
+            else if (static_meta->color_trc == MPP_FRAME_TRC_SMPTEST2084)
+                hdr_format = HDR10;
+        } break;
+        case HDR_AVS2 : {
+            if (static_meta->color_trc == MPP_FRAME_TRC_BT2020_10)
+                hdr_format = HLG;
+            else if (static_meta->color_trc == MPP_FRAME_TRC_BT1361_ECG)
+                hdr_format = HDR10;
+        } break;
+        default : {
+        } break;
+        }
     }
     off += hdr_static_meta_header->size;
 
