@@ -40,7 +40,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libdrm-dev
           cmake -S . -B build -DBUILD_TEST=ON
-          cmake --build build
+          cmake --build build --target mpi_v4l2_udp_test
           sudo cmake --install build
       - name: Building mpp in CHROOT
         run: |
