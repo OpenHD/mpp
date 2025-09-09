@@ -90,10 +90,11 @@ struct MppDecImpl_t {
     HalTaskGroup        vproc_tasks;
 
     // runtime configure set
-    MppDecCfgSet        cfg;
+    MppDecCfg           cfg_obj;
+    MppDecCfgSet        *cfg;
 
     /* control process */
-    MppMutexCond        *cmd_lock;
+    MppMutexCond        cmd_lock;
     RK_U32              cmd_send;
     RK_U32              cmd_recv;
     MpiCmd              cmd;
@@ -129,6 +130,7 @@ struct MppDecImpl_t {
     // work mode flags
     RK_U32              parser_fast_mode;
     RK_U32              disable_error;
+    RK_U32              dis_err_clr_mark;
     RK_U32              enable_deinterlace;
 
     // dec parser thread runtime resource context
@@ -205,6 +207,7 @@ typedef union DecTaskStatus_u {
         RK_U32      info_task_gen_rdy : 1;
         RK_U32      curr_task_rdy     : 1;
         RK_U32      task_parsed_rdy   : 1;
+        RK_U32      mpp_in_frm_at_pkt : 1;
     };
 } DecTaskStatus;
 

@@ -112,12 +112,23 @@ static MPP_RET vpu_api_set_enc_cfg(MppCtx mpp_ctx, MppApi *mpi, MppEncCfg enc_cf
     RK_S32 rc_mode  = cfg->rc_mode;
     RK_U32 is_fix_qp = (rc_mode == MPP_ENC_RC_MODE_FIXQP) ? 1 : 0;
 
+    RK_S32 qp_max   = (cfg->reserved[0] & 0xFF00) >> 8;
+    RK_S32 qp_min   = cfg->reserved[0] & 0x00FF;
+
+    if (qp_max == 0 || qp_max < qp) {
+        qp_max = 51;
+    }
+    if (qp_min == 0 || qp_min > qp) {
+        qp_min = 10;
+    }
+
     mpp_log("setup encoder rate control config:\n");
     mpp_log("width %4d height %4d format %d:%x\n", width, height, cfg->format, fmt);
     mpp_log("rc_mode %s qp %d bps %d\n", (rc_mode) ? ("CBR") : ("CQP"), qp, bps);
     mpp_log("fps in %d fps out %d gop %d\n", fps_in, fps_out, gop);
     mpp_log("setup encoder stream feature config:\n");
     mpp_log("profile %d level %d cabac %d\n", profile, level, cabac_en);
+    mpp_log("setup encoder qp_init %d qp_min %d qp_max %d\n", qp, qp_min, qp_max);
 
     mpp_assert(width);
     mpp_assert(height);
@@ -175,10 +186,10 @@ static MPP_RET vpu_api_set_enc_cfg(MppCtx mpp_ctx, MppApi *mpi, MppEncCfg enc_cf
         mpp_enc_cfg_set_s32(enc_cfg, "h264:cabac_en", cabac_en);
         mpp_enc_cfg_set_s32(enc_cfg, "h264:cabac_idc", 0);
         mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_init", is_fix_qp ? qp : -1);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_min", is_fix_qp  ? qp : 10);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_max", is_fix_qp ? qp : 51);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_min_i", 10);
-        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_max_i", 51);
+        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_min", is_fix_qp ? qp : qp_min);
+        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_max", is_fix_qp ? qp : qp_max);
+        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_min_i", is_fix_qp ? 10 : qp_min);
+        mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_max_i", is_fix_qp ? 51 : qp_max);
         mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_step", 4);
         mpp_enc_cfg_set_s32(enc_cfg, "h264:qp_delta_ip", 3);
     } break;
@@ -287,6 +298,7 @@ VpuApiLegacy::VpuApiLegacy() :
     init_ok(0),
     frame_count(0),
     set_eos(0),
+    frm_info(NULL),
     memGroup(NULL),
     format(MPP_FMT_YUV420P),
     mInputTimeOutMs(0),
@@ -302,6 +314,7 @@ VpuApiLegacy::VpuApiLegacy() :
     vpu_api_dbg_func("enter\n");
 
     mpp_create(&mpp_ctx, &mpi);
+    mpp_frame_init(&frm_info);
 
     memset(&frm_rdy_cb, 0, sizeof(FrameRdyCB));
     memset(&enc_param, 0, sizeof(enc_param));
@@ -316,6 +329,7 @@ VpuApiLegacy::~VpuApiLegacy()
 {
     vpu_api_dbg_func("enter\n");
 
+    mpp_frame_deinit(&frm_info);
     mpp_destroy(mpp_ctx);
 
     if (memGroup) {
@@ -343,11 +357,10 @@ VpuApiLegacy::~VpuApiLegacy()
     vpu_api_dbg_func("leave\n");
 }
 
-static RK_S32 init_frame_info(VpuCodecContext *ctx,
-                              MppCtx mpp_ctx, MppApi *mpi, VPU_GENERIC *p)
+static RK_S32 init_frame_info(VpuCodecContext *ctx, MppCtx mpp_ctx, MppApi *mpi,
+                              MppFrame frame_info, VPU_GENERIC *p)
 {
     RK_S32 ret = -1;
-    MppFrame frame = NULL;
     RK_U32 fbcOutFmt = 0;
 
     if (ctx->private_data)
@@ -375,19 +388,15 @@ static RK_S32 init_frame_info(VpuCodecContext *ctx,
     }
     p->ImgWidth = (p->ImgWidth & 0xFFFF);
 
-    mpp_frame_init(&frame);
+    mpp_frame_set_width(frame_info, p->ImgWidth);
+    mpp_frame_set_height(frame_info, p->ImgHeight);
+    mpp_frame_set_fmt(frame_info, (MppFrameFormat)(p->CodecType | fbcOutFmt));
 
-    mpp_frame_set_width(frame, p->ImgWidth);
-    mpp_frame_set_height(frame, p->ImgHeight);
-    mpp_frame_set_fmt(frame, (MppFrameFormat)(p->CodecType | fbcOutFmt));
-
-    ret = mpi->control(mpp_ctx, MPP_DEC_SET_FRAME_INFO, (MppParam)frame);
+    ret = mpi->control(mpp_ctx, MPP_DEC_SET_FRAME_INFO, (MppParam)frame_info);
     /* output the parameters used */
-    p->ImgHorStride = mpp_frame_get_hor_stride(frame);
-    p->ImgVerStride = mpp_frame_get_ver_stride(frame);
-    p->BufSize = mpp_frame_get_buf_size(frame);
-
-    mpp_frame_deinit(&frame);
+    p->ImgHorStride = mpp_frame_get_hor_stride(frame_info);
+    p->ImgVerStride = mpp_frame_get_ver_stride(frame_info);
+    p->BufSize = mpp_frame_get_buf_size(frame_info);
 
     return ret;
 }
@@ -491,7 +500,7 @@ RK_S32 VpuApiLegacy::init(VpuCodecContext *ctx, RK_U8 *extraData, RK_U32 extra_s
         vpug.ImgWidth   = ctx->width;
         vpug.ImgHeight  = ctx->height;
 
-        init_frame_info(ctx, mpp_ctx, mpi, &vpug);
+        init_frame_info(ctx, mpp_ctx, mpi, frm_info, &vpug);
 
         if (extraData != NULL) {
             MppPacket pkt = NULL;
@@ -1651,12 +1660,18 @@ RK_S32 VpuApiLegacy::control(VpuCodecContext *ctx, VPU_API_CMD cmd, void *param)
         *((RK_S32 *)param) = mEosSet;
         mpicmd = MPI_CMD_BUTT;
     } break;
+    case VPU_API_SET_FRAME_INFO: {
+        mpicmd = MPI_CMD_BUTT;
+        mpi->control(mpp_ctx, MPP_DEC_SET_FRAME_INFO, (MppParam)frm_info);
+    } break;
     case VPU_API_GET_FRAME_INFO: {
         *((VPU_GENERIC *)param) = vpug;
         mpicmd = MPI_CMD_BUTT;
     } break;
     case VPU_API_SET_OUTPUT_MODE: {
         mpicmd = MPP_DEC_SET_OUTPUT_FORMAT;
+        mpp_frame_set_fmt(frm_info, (param) ? (*((MppFrameFormat *)param)) :
+                          (MPP_FMT_YUV420SP));
     } break;
     case VPU_API_DEC_EN_FBC_HDR_256_ODD : {
         MppCompat *compatItem = NULL;
@@ -1718,6 +1733,9 @@ RK_S32 VpuApiLegacy::control(VpuCodecContext *ctx, VPU_API_CMD cmd, void *param)
     } break;
     case VPU_API_SET_DISABLE_ERROR: {
         mpicmd = MPP_DEC_SET_DISABLE_ERROR;
+    } break;
+    case VPU_API_SET_DIS_ERR_CLR_MARK: {
+        mpicmd = MPP_DEC_SET_DIS_ERR_CLR_MARK;
     } break;
     case VPU_API_SET_IMMEDIATE_OUT: {
         mpicmd = MPP_DEC_SET_IMMEDIATE_OUT;

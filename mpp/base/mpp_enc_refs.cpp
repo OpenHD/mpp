@@ -419,6 +419,7 @@ static RK_S32 check_ref_cpb_pos(EncVirtualCpb *cpb, EncFrmStatus *frm)
 
             if (cpb_ref->valid && cpb_ref->lt_idx == frm->lt_idx) {
                 pos = cpb_idx;
+                enc_refs_dbg_flow("found ltr ref %d at pos %d\n", seq_idx, pos);
                 found = 1;
                 break;
             }
@@ -593,6 +594,7 @@ MPP_RET mpp_enc_refs_dryrun(MppEncRefs refs)
     RK_S32 cpb_st_used_size = 0;
     RK_S32 seq_idx = 0;
     RK_S32 st_idx;
+    RK_S32 walk_len = MPP_MAX(lt_cfg_cnt, st_cfg_cnt);
 
     if (cfg->ready)
         goto DONE;
@@ -603,7 +605,8 @@ MPP_RET mpp_enc_refs_dryrun(MppEncRefs refs)
     enc_refs_dbg_flow("dryrun start: lt_cfg %d st_cfg %d\n",
                       lt_cfg_cnt, st_cfg_cnt);
 
-    for (st_idx = 0; st_idx < st_cfg_cnt; st_idx++, st_cfg++) {
+    for (st_idx = 0; st_idx < walk_len; st_idx++) {
+        st_cfg = &cfg->st_cfg[st_idx % st_cfg_cnt];
         EncFrmStatus frm;
         RK_S32 repeat = (st_cfg->repeat) ? st_cfg->repeat : 1;
 
@@ -885,6 +888,17 @@ MPP_RET mpp_enc_refs_get_cpb(MppEncRefs refs, EncCpbStatus *status)
         usr_cfg->force_flag &= ~ENC_FORCE_LT_REF_IDX;
     }
 
+    if (usr_cfg->force_flag & ENC_FORCE_TEMPORAL_ID) {
+        if (usr_cfg->force_temporal_id >= cfg->max_tlayers ||
+            frm->is_idr || frm->is_lt_ref)
+            mpp_err_f("Invalid temporal_id %d, frm is %s\n", usr_cfg->force_temporal_id,
+                      frm->is_idr ? "IDR" : (frm->is_lt_ref ? "LTR" : "st"));
+        else
+            frm->temporal_id = usr_cfg->force_temporal_id;
+
+        usr_cfg->force_flag &= ~ENC_FORCE_TEMPORAL_ID;
+    }
+
     if (usr_cfg->force_flag & ENC_FORCE_REF_MODE) {
         frm->ref_mode = usr_cfg->force_ref_mode;
         frm->ref_arg = usr_cfg->force_ref_arg;
@@ -892,10 +906,16 @@ MPP_RET mpp_enc_refs_get_cpb(MppEncRefs refs, EncCpbStatus *status)
         usr_cfg->force_flag &= ~ENC_FORCE_REF_MODE;
     }
 
-    if (usr_cfg->force_flag & ENC_FORCE_PSKIP) {
-        frm->force_pskip = 1;
+    if (usr_cfg->force_flag & ENC_FORCE_PSKIP_NON_REF) {
+        frm->is_non_ref = 1;
 
-        usr_cfg->force_flag &= ~ENC_FORCE_PSKIP;
+        usr_cfg->force_flag &= ~ENC_FORCE_PSKIP_NON_REF;
+    }
+
+    if (usr_cfg->force_flag & ENC_FORCE_PSKIP_IS_REF) {
+        frm->force_pskip_is_ref = 1;
+
+        usr_cfg->force_flag &= ~ENC_FORCE_PSKIP_IS_REF;
     }
 
     frm->non_recn = frm->is_non_ref || (p->igop == 1);

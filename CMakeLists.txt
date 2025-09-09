@@ -6,6 +6,7 @@
 # ----------------------------------------------------------------------------
 
 # vim: syntax=cmake
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 if(NOT CMAKE_BUILD_TYPE)
     # default to Release build for GCC builds
     set(CMAKE_BUILD_TYPE Debug CACHE STRING
@@ -331,16 +332,26 @@ include_directories(osal/inc)
 # OSAL is needed on all platform, do not need option
 add_subdirectory(osal)
 
+# Media Process Platform include
+include_directories(mpp/inc)
+include_directories(mpp/base/inc)
+# Kernel Media Process Platform include
+include_directories(kmpp/inc)
+include_directories(kmpp/base/inc)
+
 # ----------------------------------------------------------------------------
 #  utils for test case
 # ----------------------------------------------------------------------------
 add_subdirectory(utils)
 
 # ----------------------------------------------------------------------------
+#  Kernel Media Process Platform library
+# ----------------------------------------------------------------------------
+add_subdirectory(kmpp)
+
+# ----------------------------------------------------------------------------
 #  Media Process Platform library
 # ----------------------------------------------------------------------------
-# Media Process Platform include
-include_directories(mpp/inc)
 add_subdirectory(mpp)
 
 # ----------------------------------------------------------------------------

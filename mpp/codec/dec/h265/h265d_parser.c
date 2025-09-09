@@ -46,6 +46,12 @@ FILE *fp = NULL;
 #endif
 //static RK_U32 start_write = 0, value = 0;
 
+// for hevc max ctu size 64
+static RK_U32 rkv_ctu_64_align(RK_U32 val)
+{
+    return MPP_ALIGN(val, 64);
+}
+
 /**
  * Find the end of the current frame in the bitstream.
  * @return the position of the first byte of the next frame, or END_NOT_FOUND
@@ -896,9 +902,14 @@ static RK_S32 hls_slice_header(HEVCContext *s)
 
         if (s->sps->sao_enabled) {
             READ_ONEBIT(gb, &sh->slice_sample_adaptive_offset_flag[0]);
-            READ_ONEBIT(gb, &sh->slice_sample_adaptive_offset_flag[1]);
-            sh->slice_sample_adaptive_offset_flag[2] =
-                sh->slice_sample_adaptive_offset_flag[1];
+            if (s->sps->chroma_format_idc) {
+                READ_ONEBIT(gb, &sh->slice_sample_adaptive_offset_flag[1]);
+                sh->slice_sample_adaptive_offset_flag[2] =
+                    sh->slice_sample_adaptive_offset_flag[1];
+            } else {
+                sh->slice_sample_adaptive_offset_flag[1] = 0;
+                sh->slice_sample_adaptive_offset_flag[2] = 0;
+            }
         } else {
             sh->slice_sample_adaptive_offset_flag[0] = 0;
             sh->slice_sample_adaptive_offset_flag[1] = 0;
@@ -1057,6 +1068,13 @@ static RK_S32 hls_slice_header(HEVCContext *s)
                         s->sps->ctb_height * s->sps->ctb_width);
                 return  MPP_ERR_STREAM;
             }
+        }
+        if (sh->num_entry_point_offsets) {
+            RK_U32 offset_len_minus1 = 0;
+
+            READ_UE(gb, &offset_len_minus1);
+            for (i = 0; i < sh->num_entry_point_offsets; i++)
+                SKIP_BITS(gb, offset_len_minus1 + 1);
         }
     }
     if (s->pps->slice_header_extension_present_flag) {
@@ -1263,12 +1281,25 @@ static RK_S32 hevc_frame_start(HEVCContext *s)
     if (ret < 0)
         goto fail;
 
+    if (!s->h265dctx->cfg->base.disable_error && s->recovery.valid_flag &&
+        s->recovery.first_frm_valid && s->recovery.first_frm_ref_missing &&
+        s->poc < s->recovery.recovery_pic_id && s->poc >= s->recovery.first_frm_id) {
+        mpp_frame_set_discard(s->frame, 1);
+        h265d_dbg(H265D_DBG_REF, "mark recovery frame discard, poc %d\n", mpp_frame_get_poc(s->frame));
+    }
+
     if (!s->h265dctx->cfg->base.disable_error && s->miss_ref_flag) {
-        if (!IS_IRAP(s) && (!s->recovery.valid_flag ||
-                            (s->recovery.valid_flag && s->recovery.first_frm_valid &&
-                             s->recovery.first_frm_id != s->poc))) {
-            mpp_frame_set_errinfo(s->frame, MPP_FRAME_ERR_UNKNOW);
-            s->ref->error_flag = 1;
+        if (!IS_IRAP(s)) {
+            if (s->recovery.valid_flag && s->recovery.first_frm_valid && s->recovery.first_frm_id == s->poc) {
+                s->recovery.first_frm_ref_missing = 1;
+                mpp_frame_set_discard(s->frame, 1);
+                h265d_dbg(H265D_DBG_REF, "recovery frame missing ref mark discard, poc %d\n",
+                          mpp_frame_get_poc(s->frame));
+            } else {
+                mpp_frame_set_errinfo(s->frame, MPP_FRAME_ERR_UNKNOW);
+                s->ref->error_flag = 1;
+                h265d_dbg(H265D_DBG_REF, "missing ref mark error, poc %d\n", mpp_frame_get_poc(s->frame));
+            }
         } else {
             /*when found current I frame have miss refer
               may be stream have error so first set current frame
@@ -1525,7 +1556,7 @@ RK_S32 mpp_hevc_extract_rbsp(HEVCContext *s, const RK_U8 *src, int length,
     s->skipped_bytes = 0;
 
 #define STARTCODE_TEST                                              \
-    if (i + 2 < length && src[i + 1] == 0 && src[i + 2] < 2) {      \
+    if (i + 2 < length && src[i + 1] == 0 && src[i + 2] == 1) {     \
             /* startcode, so we must be past the end */             \
         length = i;                                                 \
         break;                                                      \
@@ -1720,13 +1751,20 @@ void mpp_hevc_fill_dynamic_meta(HEVCContext *s, const RK_U8 *data, RK_U32 size, 
         }
     }
     if (size && data) {
-        if (hdr_fmt == DOLBY) {
+        switch (hdr_fmt) {
+        case DLBY: {
             RK_U8 start_code[4] = {0, 0, 0, 1};
 
             memcpy((RK_U8*)hdr_dynamic_meta->data, start_code, 4);
             memcpy((RK_U8*)hdr_dynamic_meta->data + 4, (RK_U8*)data, size - 4);
-        } else
+        } break;
+        case HDRVIVID:
+        case HDR10PLUS: {
             memcpy((RK_U8*)hdr_dynamic_meta->data, (RK_U8*)data, size);
+        } break;
+        default:
+            break;
+        }
         hdr_dynamic_meta->size = size;
         hdr_dynamic_meta->hdr_fmt = hdr_fmt;
     }
@@ -1759,13 +1797,13 @@ static RK_S32 check_rpus(HEVCContext *s)
         /*
         * Check for RPU delimiter.
         *
-        * Dolby Vision RPUs masquerade as unregistered NALs of type 62.
+        * Dlby Vision RPUs masquerade as unregistered NALs of type 62.
         *
         * We have to do this check here an create the rpu buffer, since RPUs are appended
         * to the end of an AU; they are the last non-EOB/EOS NAL in the AU.
         */
         if (nal_unit_type == NAL_UNSPEC62)
-            mpp_hevc_fill_dynamic_meta(s, nal->data + 2, gb.bytes_left_ + 4, DOLBY);
+            mpp_hevc_fill_dynamic_meta(s, nal->data + 2, gb.bytes_left_ + 4, DLBY);
     }
     return 0;
 __BITREAD_ERR:
@@ -1782,7 +1820,7 @@ static RK_S32 parser_nal_units(HEVCContext *s)
     for (i = 0; i < s->nb_nals; i++) {
         ret = parser_nal_unit(s, s->nals[i].data, s->nals[i].size);
         if (ret < 0) {
-            mpp_err("Error parsing NAL unit #%d,error ret = 0xd.\n", i, ret);
+            mpp_err("Error parsing NAL unit #%d,error ret = %d.\n", i, ret);
             goto fail;
         }
         /* update slice data if slice_header_extension_present_flag is 1*/
@@ -1952,6 +1990,7 @@ MPP_RET h265d_prepare(void *ctx, MppPacket pkt, HalDecTask *task)
             s->checksum_buf_size = split_size;
             h265d_dbg(H265D_DBG_TIME, "split frame get pts %lld", sc->pts);
             s->pts = sc->pts;
+            s->dts = sc->dts;
             s->eos = (s->eos && (mpp_packet_get_length(pkt) < 4)) ? 1 : 0;
         } else {
             return MPP_FAIL_SPLIT_FRAME;
@@ -1959,6 +1998,7 @@ MPP_RET h265d_prepare(void *ctx, MppPacket pkt, HalDecTask *task)
     } else {
         pos = buf + length;
         s->pts = pts;
+        s->dts = dts;
         mpp_packet_set_pos(pkt, pos);
         if (s->eos && !length) {
             task->valid = 0;
@@ -2060,11 +2100,11 @@ MPP_RET h265d_deinit(void *ctx)
 
     for (i = 0; i < MAX_VPS_COUNT; i++) {
         if (s->vps_list[i])
-            mpp_mem_pool_put(s->vps_pool, s->vps_list[i]);
+            mpp_mem_pool_put_f(s->vps_pool, s->vps_list[i]);
     }
     for (i = 0; i < MAX_SPS_COUNT; i++) {
         if (s->sps_list[i])
-            mpp_mem_pool_put(s->sps_pool, s->sps_list[i]);
+            mpp_mem_pool_put_f(s->sps_pool, s->sps_list[i]);
     }
     for (i = 0; i < MAX_PPS_COUNT; i++)
         mpp_hevc_pps_free(s->pps_list[i]);
@@ -2097,9 +2137,9 @@ MPP_RET h265d_deinit(void *ctx)
     }
 
     if (s->vps_pool)
-        mpp_mem_pool_deinit(s->vps_pool);
+        mpp_mem_pool_deinit_f(s->vps_pool);
     if (s->sps_pool)
-        mpp_mem_pool_deinit(s->sps_pool);
+        mpp_mem_pool_deinit_f(s->sps_pool);
 
     MPP_FREE((s->hdr_dynamic_meta));
 
@@ -2231,8 +2271,10 @@ MPP_RET h265d_init(void *ctx, ParserCfg *parser_cfg)
 
     s->pre_pps_id = -1;
 
-    s->vps_pool = mpp_mem_pool_init(sizeof(HEVCVPS));
-    s->sps_pool = mpp_mem_pool_init(sizeof(HEVCSPS));
+    s->vps_pool = mpp_mem_pool_init_f("h264d_vps", sizeof(HEVCVPS));
+    s->sps_pool = mpp_mem_pool_init_f("h265d_sps", sizeof(HEVCSPS));
+
+    mpp_slots_set_prop(s->slots, SLOTS_WIDTH_ALIGN, rkv_ctu_64_align);
 
 #ifdef dump
     fp = fopen("/data/dump1.bin", "wb+");
@@ -2290,9 +2332,15 @@ MPP_RET h265d_callback(void *ctx, void *err_info)
         // s->miss_ref_flag = 1;
         mpp_buf_slot_get_prop(s->slots, task_dec->output, SLOT_FRAME_PTR, &frame);
         mpp_frame_set_errinfo(frame, MPP_FRAME_ERR_UNKNOW);
+        h265d_dbg(H265D_DBG_REF, "set decoded frame error, poc %d, slot %d\n",
+                  mpp_frame_get_poc(frame), task_dec->output);
+
         for (i = 0; i < MPP_ARRAY_ELEMS(s->DPB); i++) {
             if (s->DPB[i].slot_index == task_dec->output) {
                 s->DPB[i].error_flag = 1;
+                h265d_dbg(H265D_DBG_REF, "Mark dpb[%d] poc %d, slot_idx %d, err %d, frame: err %d, dis %d\n",
+                          i, mpp_frame_get_poc(s->DPB[i].frame), s->DPB[i].slot_index, s->DPB[i].error_flag,
+                          mpp_frame_get_errinfo(s->DPB[i].frame), mpp_frame_get_discard(s->DPB[i].frame));
             }
         }
     }

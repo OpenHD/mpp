@@ -254,7 +254,7 @@ static RK_S32 check_codec_to_resend_hdr(MppEncCodecCfg *codec)
     return 0;
 }
 
-static RK_S32 check_resend_hdr(MpiCmd cmd, void *param, MppEncCfgSet *cfg)
+static RK_S32 check_resend_hdr(MpiCmd cmd, void *param, MppEncCfgSet *cfg, RK_BOOL *encode_idr)
 {
     RK_S32 resend = 0;
     static const char *resend_reason[] = {
@@ -266,8 +266,12 @@ static RK_S32 check_resend_hdr(MpiCmd cmd, void *param, MppEncCfgSet *cfg)
         "set cfg change codec",
     };
 
-    if (cfg->codec.coding == MPP_VIDEO_CodingMJPEG)
+    *encode_idr = RK_TRUE;
+
+    if (cfg->codec.coding == MPP_VIDEO_CodingMJPEG) {
+        *encode_idr = RK_FALSE;
         return 0;
+    }
 
     do {
         if (cmd == MPP_ENC_SET_IDR_FRAME)
@@ -282,12 +286,15 @@ static RK_S32 check_resend_hdr(MpiCmd cmd, void *param, MppEncCfgSet *cfg)
         if (cmd == MPP_ENC_SET_RC_CFG) {
             RK_U32 change = *(RK_U32 *)param;
             RK_U32 check_flag = MPP_ENC_RC_CFG_CHANGE_RC_MODE |
-                                MPP_ENC_RC_CFG_CHANGE_FPS_IN |
                                 MPP_ENC_RC_CFG_CHANGE_FPS_OUT |
                                 MPP_ENC_RC_CFG_CHANGE_GOP;
 
             if (change & check_flag) {
                 resend = 2;
+
+                if (cfg->rc.fps_chg_no_idr && (change & MPP_ENC_RC_CFG_CHANGE_FPS_OUT))
+                    *encode_idr = RK_FALSE;
+
                 break;
             }
         }
@@ -309,12 +316,15 @@ static RK_S32 check_resend_hdr(MpiCmd cmd, void *param, MppEncCfgSet *cfg)
 
             change = cfg->rc.change;
             check_flag = MPP_ENC_RC_CFG_CHANGE_RC_MODE |
-                         MPP_ENC_RC_CFG_CHANGE_FPS_IN |
                          MPP_ENC_RC_CFG_CHANGE_FPS_OUT |
                          MPP_ENC_RC_CFG_CHANGE_GOP;
 
             if (change & check_flag) {
                 resend = 4;
+
+                if (cfg->rc.fps_chg_no_idr && (change & MPP_ENC_RC_CFG_CHANGE_FPS_OUT))
+                    *encode_idr = RK_FALSE;
+
                 break;
             }
             if (check_codec_to_resend_hdr(&cfg->codec)) {
@@ -326,6 +336,8 @@ static RK_S32 check_resend_hdr(MpiCmd cmd, void *param, MppEncCfgSet *cfg)
 
     if (resend)
         enc_dbg_detail("send header for %s\n", resend_reason[resend]);
+    else
+        *encode_idr = RK_FALSE;
 
     return resend;
 }
@@ -524,13 +536,13 @@ MPP_RET mpp_enc_callback(const char *caller, void *ctx, RK_S32 cmd, void *param)
             mpp_assert(enc->task_out);
         } else {
             if (mpp->mPktOut) {
-                mpp_list *pkt_out = mpp->mPktOut;
+                MppList *pkt_out = mpp->mPktOut;
 
-                AutoMutex autoLock(pkt_out->mutex());
-
-                pkt_out->add_at_tail(&impl, sizeof(impl));
+                mpp_mutex_cond_lock(&pkt_out->cond_lock);
+                mpp_list_add_at_tail(pkt_out, &impl, sizeof(impl));
                 mpp->mPacketPutCount++;
-                pkt_out->signal();
+                mpp_list_signal(pkt_out);
+                mpp_mutex_cond_unlock(&pkt_out->cond_lock);
             }
         }
     } break;
@@ -571,6 +583,7 @@ MPP_RET mpp_enc_proc_rc_cfg(MppCodingType coding, MppEncRcCfg *dst, MppEncRcCfg 
             dst->fps_out_flex = src->fps_out_flex;
             dst->fps_out_num = src->fps_out_num;
             dst->fps_out_denom = src->fps_out_denom;
+            dst->fps_chg_no_idr = src->fps_chg_no_idr;
         }
 
         if (change & MPP_ENC_RC_CFG_CHANGE_GOP) {
@@ -682,9 +695,6 @@ MPP_RET mpp_enc_proc_rc_cfg(MppCodingType coding, MppEncRcCfg *dst, MppEncRcCfg 
             // Make sure refresh_num is legal
             dst->refresh_num = src->refresh_num;
         }
-
-        if (change & MPP_ENC_RC_CFG_CHANGE_QPDD)
-            dst->cu_qp_delta_depth = src->cu_qp_delta_depth;
 
         // parameter checking
         if (dst->rc_mode >= MPP_ENC_RC_MODE_BUTT) {
@@ -869,6 +879,9 @@ MPP_RET mpp_enc_proc_tune_cfg(MppEncFineTuneCfg *dst, MppEncFineTuneCfg *src)
             ret = MPP_ERR_VALUE;
         }
 
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_SE_MODE)
+            dst->se_mode = src->se_mode;
+
         if (change & MPP_ENC_TUNE_CFG_CHANGE_DEBLUR_EN)
             dst->deblur_en = src->deblur_en;
 
@@ -960,6 +973,21 @@ MPP_RET mpp_enc_proc_tune_cfg(MppEncFineTuneCfg *dst, MppEncFineTuneCfg *src)
             ret = MPP_ERR_VALUE;
         }
 
+        if (change & MPP_ENC_TUNE_CFG_CHANGE_SMART_V3_CFG) {
+            dst->bg_delta_qp_i = src->bg_delta_qp_i;
+            dst->bg_delta_qp_p = src->bg_delta_qp_p;
+            dst->fg_delta_qp_i = src->fg_delta_qp_i;
+            dst->fg_delta_qp_p = src->fg_delta_qp_p;
+            dst->bmap_qpmin_i = src->bmap_qpmin_i;
+            dst->bmap_qpmin_p = src->bmap_qpmin_p;
+            dst->bmap_qpmax_i = src->bmap_qpmax_i;
+            dst->bmap_qpmax_p = src->bmap_qpmax_p;
+            dst->min_bg_fqp = src->min_bg_fqp;
+            dst->max_bg_fqp = src->max_bg_fqp;
+            dst->min_fg_fqp = src->min_fg_fqp;
+            dst->max_fg_fqp = src->max_fg_fqp;
+        }
+
         dst->change |= change;
 
         if (ret) {
@@ -1004,11 +1032,11 @@ static MPP_RET mpp_enc_control_set_ref_cfg(MppEncImpl *enc, void *param)
 MPP_RET mpp_enc_proc_cfg(MppEncImpl *enc, MpiCmd cmd, void *param)
 {
     MPP_RET ret = MPP_OK;
+    RK_BOOL encode_idr = RK_FALSE;
 
     switch (cmd) {
     case MPP_ENC_SET_CFG : {
-        MppEncCfgImpl *impl = (MppEncCfgImpl *)param;
-        MppEncCfgSet *src = &impl->cfg;
+        MppEncCfgSet *src = (MppEncCfgSet *)param;
         RK_U32 change = src->base.change;
         MPP_RET ret_tmp = MPP_OK;
 
@@ -1018,6 +1046,9 @@ MPP_RET mpp_enc_proc_cfg(MppEncImpl *enc, MpiCmd cmd, void *param)
 
             if (change & MPP_ENC_BASE_CFG_CHANGE_LOW_DELAY)
                 dst->base.low_delay = src->base.low_delay;
+
+            if (change & MPP_ENC_BASE_CFG_CHANGE_SMART_EN)
+                dst->base.smart_en = src->base.smart_en;
 
             src->base.change = 0;
         }
@@ -1203,8 +1234,10 @@ MPP_RET mpp_enc_proc_cfg(MppEncImpl *enc, MpiCmd cmd, void *param)
     } break;
     }
 
-    if (check_resend_hdr(cmd, param, &enc->cfg)) {
-        enc->frm_cfg.force_flag |= ENC_FORCE_IDR;
+    if (check_resend_hdr(cmd, param, &enc->cfg, &encode_idr)) {
+        if (encode_idr)
+            enc->frm_cfg.force_flag |= ENC_FORCE_IDR;
+
         enc->hdr_status.val = 0;
     }
     if (check_rc_cfg_update(cmd, &enc->cfg))
@@ -1229,7 +1262,8 @@ static const char *name_of_rc_mode[] = {
     "cbr",
     "fixqp",
     "avbr",
-    "smtrc"
+    "smtrc",
+    "sp_enc"
 };
 
 static void update_rc_cfg_log(MppEncImpl *impl, const char* fmt, ...)
@@ -1317,6 +1351,9 @@ static void set_rc_cfg(RcCfg *cfg, MppEncCfgSet *cfg_set)
     } break;
     case MPP_ENC_RC_MODE_SMTRC: {
         cfg->mode = RC_SMT;
+    } break;
+    case MPP_ENC_RC_MODE_SE: {
+        cfg->mode = RC_SE;
     } break;
     default : {
         cfg->mode = RC_AVBR;
@@ -1642,11 +1679,15 @@ static MPP_RET mpp_enc_force_pskip_check(Mpp *mpp, EncAsyncTaskInfo *task)
     mpp_enc_refs_get_cpb_info(enc->refs, &cpb_info);
     max_tid = cpb_info.max_st_tid;
 
-    if (frm->is_idr) {
+    if (task->usr.force_flag & ENC_FORCE_IDR) {
+        enc_dbg_detail("task %d, FORCE IDR should not be set as pskip frames", frm->seq_idx);
+        ret = MPP_NOK;
+    }
+    if (cpb->curr.is_idr) {
         enc_dbg_detail("task %d, IDR frames should not be set as pskip frames", frm->seq_idx);
         ret = MPP_NOK;
     }
-    if (frm->is_lt_ref) {
+    if (cpb->curr.is_lt_ref) {
         enc_dbg_detail("task %d, LTR frames should not be set as pskip frames", frm->seq_idx);
         ret = MPP_NOK;
     }
@@ -1676,7 +1717,10 @@ static MPP_RET mpp_enc_force_pskip(Mpp *mpp, EncAsyncTaskInfo *task)
     enc_dbg_func("enter\n");
 
     frm_cfg->force_pskip++;
-    frm_cfg->force_flag |= ENC_FORCE_PSKIP;
+    if (frm->force_pskip)
+        frm_cfg->force_flag |= ENC_FORCE_PSKIP_NON_REF;
+    else if (frm->force_pskip_is_ref)
+        frm_cfg->force_flag |= ENC_FORCE_PSKIP_IS_REF;
 
     /* NOTE: in some condition the pskip should not happen */
     mpp_enc_refs_set_usr_cfg(enc->refs, frm_cfg);
@@ -1684,22 +1728,32 @@ static MPP_RET mpp_enc_force_pskip(Mpp *mpp, EncAsyncTaskInfo *task)
     enc_dbg_detail("task %d enc proc dpb\n", frm->seq_idx);
     mpp_enc_refs_get_cpb(enc->refs, cpb);
 
-    enc_dbg_frm_status("frm %d start ***********************************\n", cpb->curr.seq_idx);
-    ENC_RUN_FUNC2(enc_impl_proc_dpb, impl, hal_task, mpp, ret);
-
     ret = mpp_enc_force_pskip_check(mpp, task);
+
     if (ret) {
         mpp_enc_refs_rollback(enc->refs);
         frm_cfg->force_pskip--;
-        frm_cfg->force_flag &= ~ENC_FORCE_PSKIP;
+        if (frm->force_pskip)
+            frm_cfg->force_flag &= ~ENC_FORCE_PSKIP_NON_REF;
+        else if (frm->force_pskip_is_ref)
+            frm_cfg->force_flag &= ~ENC_FORCE_PSKIP_IS_REF;
         return MPP_NOK;
     }
+
+    enc_dbg_frm_status("frm %d start ***********************************\n", cpb->curr.seq_idx);
+    ENC_RUN_FUNC2(enc_impl_proc_dpb, impl, hal_task, mpp, ret);
 
     enc_dbg_detail("task %d rc frame start\n", frm->seq_idx);
     ENC_RUN_FUNC2(rc_frm_start, enc->rc_ctx, rc_task, mpp, ret);
 
+    enc_dbg_detail("task %d rc hal start\n", frm->seq_idx);
+    ENC_RUN_FUNC2(rc_hal_start, enc->rc_ctx, rc_task, mpp, ret);
+
     enc_dbg_detail("task %d enc sw enc start\n", frm->seq_idx);
     ENC_RUN_FUNC2(enc_impl_sw_enc, impl, hal_task, mpp, ret);
+
+    enc_dbg_detail("task %d rc hal end\n", frm->seq_idx);
+    ENC_RUN_FUNC2(rc_hal_end, enc->rc_ctx, rc_task, mpp, ret);
 
     enc_dbg_detail("task %d rc frame end\n", frm->seq_idx);
     ENC_RUN_FUNC2(rc_frm_end, enc->rc_ctx, rc_task, mpp, ret);
@@ -1708,6 +1762,39 @@ TASK_DONE:
     enc_dbg_func("leave\n");
     return ret;
 }
+
+static MPP_RET mpp_enc_get_pskip_mode(Mpp *mpp, EncAsyncTaskInfo *task, MppPskipMode *skip_mode)
+{
+    MppEncImpl *enc = (MppEncImpl *)mpp->mEnc;
+    EncRcTask *rc_task = &task->rc;
+    EncFrmStatus *frm = &rc_task->frm;
+    HalEncTask *hal_task = &task->task;
+    MPP_RET ret = MPP_OK;
+
+    skip_mode->pskip_is_ref = 0;
+    skip_mode->pskip_is_non_ref = 0;
+    enc->frame = hal_task->frame;
+
+    if (mpp_frame_has_meta(enc->frame)) {
+        MppMeta frm_meta = mpp_frame_get_meta(enc->frame);
+        if (frm_meta) {
+            mpp_meta_get_s32(frm_meta, KEY_INPUT_PSKIP, &skip_mode->pskip_is_ref);
+            mpp_meta_get_s32(frm_meta, KEY_INPUT_PSKIP_NON_REF, &skip_mode->pskip_is_non_ref);
+        }
+    }
+
+    if (skip_mode->pskip_is_ref == 1 && skip_mode->pskip_is_non_ref == 1) {
+        mpp_err("task %d, Don't cfg pskip frame to be both a ref and non-ref at the same time");
+        ret = MPP_NOK;
+    } else {
+        frm->force_pskip = skip_mode->pskip_is_non_ref;
+        frm->force_pskip_is_ref = skip_mode->pskip_is_ref;
+        ret = MPP_OK;
+    }
+
+    return ret;
+}
+
 
 static void mpp_enc_add_sw_header(MppEncImpl *enc, HalEncTask *hal_task)
 {
@@ -1803,17 +1890,11 @@ static MPP_RET mpp_enc_normal(Mpp *mpp, EncAsyncTaskInfo *task)
 
     enc_dbg_detail("task %d check force pskip start\n", frm->seq_idx);
     if (!status->check_frm_pskip) {
-        RK_S32 force_pskip = 0;
+        MppPskipMode skip_mode;
         status->check_frm_pskip = 1;
 
-        if (mpp_frame_has_meta(enc->frame)) {
-            MppMeta frm_meta = mpp_frame_get_meta(enc->frame);
-            if (frm_meta)
-                mpp_meta_get_s32(frm_meta, KEY_INPUT_PSKIP, &force_pskip);
-        }
-
-        if (force_pskip == 1) {
-            frm->force_pskip = 1;
+        mpp_enc_get_pskip_mode((Mpp*)enc->mpp, task, &skip_mode);
+        if (skip_mode.pskip_is_ref || skip_mode.pskip_is_non_ref) {
             ret = mpp_enc_force_pskip((Mpp*)enc->mpp, task);
             if (ret)
                 enc_dbg_detail("task %d set force pskip failed.", frm->seq_idx);
@@ -1873,7 +1954,7 @@ static MPP_RET mpp_enc_normal(Mpp *mpp, EncAsyncTaskInfo *task)
     ENC_RUN_FUNC2(mpp_enc_hal_ret_task, hal, hal_task, mpp, ret);
 
     enc_dbg_detail("task %d rc frame check reenc\n", frm->seq_idx);
-    ENC_RUN_FUNC2(rc_frm_check_reenc, enc->rc_ctx, rc_task, mpp, ret);
+    ENC_RUN_FUNC2(rc_check_reenc, enc->rc_ctx, rc_task, mpp, ret);
 
 TASK_DONE:
     return ret;
@@ -1933,7 +2014,7 @@ static MPP_RET mpp_enc_reenc_simple(Mpp *mpp, EncAsyncTaskInfo *task)
     ENC_RUN_FUNC2(mpp_enc_hal_ret_task, hal, hal_task, mpp, ret);
 
     enc_dbg_detail("task %d rc frame check reenc\n", frm->seq_idx);
-    ENC_RUN_FUNC2(rc_frm_check_reenc, enc->rc_ctx, rc_task, mpp, ret);
+    ENC_RUN_FUNC2(rc_check_reenc, enc->rc_ctx, rc_task, mpp, ret);
 
     enc_dbg_detail("task %d reenc %d times %d\n", frm->seq_idx, frm->reencode, frm->reencode_times);
     enc_dbg_func("leave\n");
@@ -1979,7 +2060,7 @@ static MPP_RET mpp_enc_reenc_force_pskip(Mpp *mpp, EncAsyncTaskInfo *task)
     enc_dbg_func("enter\n");
 
     frm_cfg->force_pskip++;
-    frm_cfg->force_flag |= ENC_FORCE_PSKIP;
+    frm_cfg->force_flag |= ENC_FORCE_PSKIP_NON_REF;
 
     /* NOTE: in some condition the pskip should not happen */
 
@@ -2238,17 +2319,11 @@ static MPP_RET try_proc_low_deley_task(Mpp *mpp, EncAsyncTaskInfo *task, EncAsyn
 
     enc_dbg_detail("task %d check force pskip start\n", frm->seq_idx);
     if (!status->check_frm_pskip) {
-        RK_S32 force_pskip = 0;
+        MppPskipMode skip_mode;
         status->check_frm_pskip = 1;
 
-        if (mpp_frame_has_meta(enc->frame)) {
-            MppMeta frm_meta = mpp_frame_get_meta(enc->frame);
-            if (frm_meta)
-                mpp_meta_get_s32(frm_meta, KEY_INPUT_PSKIP, &force_pskip);
-        }
-
-        if (force_pskip == 1) {
-            frm->force_pskip = 1;
+        mpp_enc_get_pskip_mode((Mpp*)enc->mpp, task, &skip_mode);
+        if (skip_mode.pskip_is_ref || skip_mode.pskip_is_non_ref) {
             ret = mpp_enc_force_pskip((Mpp*)enc->mpp, task);
             if (ret)
                 enc_dbg_detail("task %d set force pskip failed.", frm->seq_idx);
@@ -2455,14 +2530,15 @@ static MPP_RET set_enc_info_to_packet(MppEncImpl *enc, HalEncTask *hal_task)
         mpp_meta_set_s32(meta, KEY_LVL4_INTRA_NUM,  rc_task->info.lvl4_intra_num);
 
         mpp_meta_set_s64(meta, KEY_ENC_SSE,  rc_task->info.sse);
-        /* frame type */
-        mpp_meta_set_s32(meta, KEY_OUTPUT_INTRA,    frm->is_intra);
         mpp_meta_set_s32(meta, KEY_OUTPUT_PSKIP,    frm->force_pskip || is_pskip);
         mpp_meta_set_s32(meta, KEY_ENC_BPS_RT, rc_task->info.rt_bits);
 
         if (rc_task->info.frame_type == INTER_VI_FRAME)
             mpp_meta_set_s32(meta, KEY_ENC_USE_LTR, rc_task->cpb.refr.lt_idx);
     }
+    /* frame type */
+    mpp_meta_set_s32(meta, KEY_OUTPUT_INTRA,    frm->is_intra);
+
     /* start qp and average qp */
     mpp_meta_set_s32(meta, KEY_ENC_START_QP,    rc_task->info.quality_target);
     mpp_meta_set_s32(meta, KEY_ENC_AVERAGE_QP,  rc_task->info.quality_real);
@@ -2581,14 +2657,17 @@ void *mpp_enc_thread(void *data)
     enc->time_base = mpp_time();
 
     while (1) {
-        {
-            AutoMutex autolock(thd_enc->mutex());
-            if (MPP_THREAD_RUNNING != thd_enc->get_status())
-                break;
+        mpp_thread_lock(thd_enc, THREAD_WORK);
 
-            if (check_enc_task_wait(enc, &wait))
-                thd_enc->wait();
+        if (MPP_THREAD_RUNNING != mpp_thread_get_status(thd_enc, THREAD_WORK)) {
+            mpp_thread_unlock(thd_enc, THREAD_WORK);
+            break;
         }
+
+        if (check_enc_task_wait(enc, &wait))
+            mpp_thread_wait(thd_enc, THREAD_WORK);
+
+        mpp_thread_unlock(thd_enc, THREAD_WORK);
 
         // When encoder is not on encoding process external config and reset
         if (!status->enc_start) {
@@ -2620,19 +2699,20 @@ void *mpp_enc_thread(void *data)
             // 2. process reset
             if (enc->reset_flag) {
                 enc_dbg_detail("thread reset start\n");
-                {
-                    AutoMutex autolock(thd_enc->mutex());
-                    enc->status_flag = 0;
-                }
+
+                mpp_thread_lock(thd_enc, THREAD_WORK);
+                enc->status_flag = 0;
+                mpp_thread_unlock(thd_enc, THREAD_WORK);
 
                 enc->frm_cfg.force_flag |= ENC_FORCE_IDR;
                 enc->frm_cfg.force_idr++;
 
-                AutoMutex autolock(thd_enc->mutex(THREAD_CONTROL));
+                mpp_thread_lock(thd_enc, THREAD_CONTROL);
                 enc->reset_flag = 0;
                 sem_post(&enc->enc_reset);
                 enc_dbg_detail("thread reset done\n");
                 wait.val = 0;
+                mpp_thread_unlock(thd_enc, THREAD_CONTROL);
                 continue;
             }
 
@@ -2694,7 +2774,7 @@ static void async_task_terminate(MppEncImpl *enc, EncAsyncTaskInfo *async)
         enc_dbg_detail("task %d enqueue packet pts %lld\n", frm->seq_idx, enc->task_pts);
 
         if (mpp->mPktOut) {
-            mpp_list *pkt_out = mpp->mPktOut;
+            MppList *pkt_out = mpp->mPktOut;
 
             if (enc->frame) {
                 MppMeta meta = mpp_packet_get_meta(pkt);
@@ -2706,13 +2786,14 @@ static void async_task_terminate(MppEncImpl *enc, EncAsyncTaskInfo *async)
                 enc->frame = NULL;
             }
 
-            AutoMutex autolock(pkt_out->mutex());
+            mpp_mutex_cond_lock(&pkt_out->cond_lock);
 
-            pkt_out->add_at_tail(&pkt, sizeof(pkt));
+            mpp_list_add_at_tail(pkt_out, &pkt, sizeof(pkt));
             mpp->mPacketPutCount++;
-            pkt_out->signal();
+            mpp_list_signal(pkt_out);
             mpp_assert(pkt);
 
+            mpp_mutex_cond_unlock(&pkt_out->cond_lock);
             enc_dbg_detail("packet out ready\n");
         }
     }
@@ -2728,7 +2809,7 @@ static void async_task_skip(MppEncImpl *enc)
     MppFrame frm = NULL;
     MppPacket pkt = NULL;
 
-    mpp->mFrmIn->del_at_head(&frm, sizeof(frm));
+    mpp_list_del_at_head(mpp->mFrmIn, &frm, sizeof(frm));
     mpp->mFrameGetCount++;
 
     mpp_assert(frm);
@@ -2764,14 +2845,14 @@ static void async_task_skip(MppEncImpl *enc)
     mpp_meta_set_frame(meta, KEY_INPUT_FRAME, frm);
 
     if (mpp->mPktOut) {
-        mpp_list *pkt_out = mpp->mPktOut;
+        MppList *pkt_out = mpp->mPktOut;
 
-        pkt_out->lock();
+        mpp_mutex_cond_lock(&pkt_out->cond_lock);
         mpp_stopwatch_record(stopwatch, "skip task output");
-        pkt_out->add_at_tail(&pkt, sizeof(pkt));
+        mpp_list_add_at_tail(pkt_out, &pkt, sizeof(pkt));
         mpp->mPacketPutCount++;
-        pkt_out->signal();
-        pkt_out->unlock();
+        mpp_list_signal(pkt_out);
+        mpp_mutex_cond_unlock(&pkt_out->cond_lock);
     }
 
     enc_dbg_detail("packet skip ready\n");
@@ -2891,12 +2972,14 @@ static MPP_RET try_get_async_task(MppEncImpl *enc, EncAsyncWait *wait)
 
     if (NULL == frame) {
         if (mpp->mFrmIn) {
-            mpp_list *frm_in = mpp->mFrmIn;
-            AutoMutex autolock(frm_in->mutex());
+            MppList *frm_in = mpp->mFrmIn;
 
-            if (frm_in->list_size()) {
-                frm_in->del_at_head(&frame, sizeof(frame));
-                frm_in->signal();
+            mpp_mutex_cond_lock(&frm_in->cond_lock);
+
+            if (mpp_list_size(frm_in)) {
+                mpp_list_del_at_head(frm_in, &frame, sizeof(frame));
+                mpp_list_signal(frm_in);
+
                 mpp->mFrameGetCount++;
 
                 mpp_assert(frame);
@@ -2911,6 +2994,8 @@ static MPP_RET try_get_async_task(MppEncImpl *enc, EncAsyncWait *wait)
 
                 hal_task->frame = frame;
             }
+
+            mpp_mutex_cond_unlock(&frm_in->cond_lock);
         }
 
         if (NULL == frame) {
@@ -3107,19 +3192,12 @@ static MPP_RET proc_async_task(MppEncImpl *enc, EncAsyncWait *wait)
         goto SEND_TASK_INFO;
 
     if (!status->check_frm_pskip) {
-        RK_S32 force_pskip = 0;
+        MppPskipMode skip_mode;
         status->check_frm_pskip = 1;
 
-        if (mpp_frame_has_meta(hal_task->frame)) {
-            MppMeta frm_meta = mpp_frame_get_meta(hal_task->frame);
-            if (frm_meta)
-                mpp_meta_get_s32(frm_meta, KEY_INPUT_PSKIP, &force_pskip);
-        }
-
-        if (force_pskip == 1) {
-            frm->force_pskip = 1;
+        mpp_enc_get_pskip_mode((Mpp*)enc->mpp, async, &skip_mode);
+        if (skip_mode.pskip_is_ref || skip_mode.pskip_is_non_ref) {
             ret = mpp_enc_force_pskip((Mpp*)enc->mpp, async);
-
             if (ret)
                 enc_dbg_detail("task %d set force pskip failed.", frm->seq_idx);
             else
@@ -3285,13 +3363,15 @@ TASK_DONE:
         set_enc_info_to_packet(enc, hal_task);
 
     if (mpp->mPktOut) {
-        mpp_list *pkt_out = mpp->mPktOut;
+        MppList *pkt_out = mpp->mPktOut;
 
-        AutoMutex autoLock(pkt_out->mutex());
+        mpp_mutex_cond_lock(&pkt_out->cond_lock);
 
-        pkt_out->add_at_tail(&pkt, sizeof(pkt));
+        mpp_list_add_at_tail(pkt_out, &pkt, sizeof(pkt));
         mpp->mPacketPutCount++;
-        pkt_out->signal();
+        mpp_list_signal(pkt_out);
+
+        mpp_mutex_cond_unlock(&pkt_out->cond_lock);
     }
 
     return ret;
@@ -3310,25 +3390,26 @@ void *mpp_enc_async_thread(void *data)
     wait.val = 0;
 
     while (1) {
-        {
-            AutoMutex autolock(thd_enc->mutex());
-            if (MPP_THREAD_RUNNING != thd_enc->get_status())
-                break;
-
-            if (check_enc_async_wait(enc, &wait)) {
-                enc_dbg_detail("wait start\n");
-                thd_enc->wait();
-                enc_dbg_detail("wait done\n");
-            }
+        mpp_thread_lock(thd_enc, THREAD_WORK);
+        if (MPP_THREAD_RUNNING != mpp_thread_get_status(thd_enc, THREAD_WORK)) {
+            mpp_thread_unlock(thd_enc, THREAD_WORK);
+            break;
         }
+
+        if (check_enc_async_wait(enc, &wait)) {
+            enc_dbg_detail("wait start\n");
+            mpp_thread_wait(thd_enc, THREAD_WORK);
+            enc_dbg_detail("wait done\n");
+        }
+        mpp_thread_unlock(thd_enc, THREAD_WORK);
 
         // When encoder is not on encoding process external config and reset
         // 1. process user control and reset flag
         if (enc->cmd_send != enc->cmd_recv || enc->reset_flag) {
-            mpp_list *frm_in = mpp->mFrmIn;
+            MppList *frm_in = mpp->mFrmIn;
 
             /* when process cmd or reset hold frame input */
-            frm_in->lock();
+            mpp_mutex_cond_lock(&frm_in->cond_lock);
 
             enc_dbg_detail("ctrl proc %d cmd %08x\n", enc->cmd_recv, enc->cmd);
 
@@ -3361,24 +3442,26 @@ void *mpp_enc_async_thread(void *data)
                 enc_dbg_detail("thread reset start\n");
 
                 /* skip the frames in input queue */
-                while (frm_in->list_size())
+                while (mpp_list_size(frm_in))
                     async_task_skip(enc);
 
                 {
-                    AutoMutex autolock(thd_enc->mutex());
+                    mpp_thread_lock(thd_enc, THREAD_WORK);
                     enc->status_flag = 0;
+                    mpp_thread_unlock(thd_enc, THREAD_WORK);
                 }
 
                 enc->frm_cfg.force_flag |= ENC_FORCE_IDR;
                 enc->frm_cfg.force_idr++;
 
-                AutoMutex autolock(thd_enc->mutex(THREAD_CONTROL));
+                mpp_thread_lock(thd_enc, THREAD_CONTROL);
                 enc->reset_flag = 0;
                 sem_post(&enc->enc_reset);
                 enc_dbg_detail("thread reset done\n");
+                mpp_thread_unlock(thd_enc, THREAD_CONTROL);
             }
         SYNC_DONE:
-            frm_in->unlock();
+            mpp_mutex_cond_unlock(&frm_in->cond_lock);
             wait.val = 0;
             continue;
         }

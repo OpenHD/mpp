@@ -143,6 +143,7 @@ MPP_RET mpp_enc_init_v2(MppEnc *enc, MppEncInitCfg *cfg)
     sem_init(&p->enc_reset, 0, 0);
     sem_init(&p->cmd_start, 0, 0);
     sem_init(&p->cmd_done, 0, 0);
+    mpp_mutex_init(&p->lock);
 
     *enc = p;
     return ret;
@@ -159,6 +160,8 @@ MPP_RET mpp_enc_deinit_v2(MppEnc ctx)
         mpp_err_f("found NULL input\n");
         return MPP_ERR_NULL_PTR;
     }
+
+    mpp_mutex_destroy(&enc->lock);
 
     if (enc->hal_info) {
         hal_info_deinit(enc->hal_info);
@@ -217,8 +220,8 @@ MPP_RET mpp_enc_start_v2(MppEnc ctx)
     snprintf(name, sizeof(name) - 1, "mpp_%se_%d",
              strof_coding_type(enc->coding), getpid());
 
-    enc->thread_enc = new MppThread(mpp_enc_thread, enc->mpp, name);
-    enc->thread_enc->start();
+    enc->thread_enc = mpp_thread_create(mpp_enc_thread, enc->mpp, name);
+    mpp_thread_start(enc->thread_enc);
 
     enc_dbg_func("%p out\n", enc);
 
@@ -235,8 +238,8 @@ MPP_RET mpp_enc_start_async(MppEnc ctx)
     snprintf(name, sizeof(name) - 1, "mpp_%se_%d",
              strof_coding_type(enc->coding), getpid());
 
-    enc->thread_enc = new MppThread(mpp_enc_async_thread, enc->mpp, name);
-    enc->thread_enc->start();
+    enc->thread_enc = mpp_thread_create(mpp_enc_async_thread, enc->mpp, name);
+    mpp_thread_start(enc->thread_enc);
 
     enc_dbg_func("%p out\n", enc);
 
@@ -251,8 +254,8 @@ MPP_RET mpp_enc_stop_v2(MppEnc ctx)
     enc_dbg_func("%p in\n", enc);
 
     if (enc->thread_enc) {
-        enc->thread_enc->stop();
-        delete enc->thread_enc;
+        mpp_thread_stop(enc->thread_enc);
+        mpp_thread_destroy(enc->thread_enc);
         enc->thread_enc = NULL;
     }
 
@@ -264,19 +267,22 @@ MPP_RET mpp_enc_stop_v2(MppEnc ctx)
 MPP_RET mpp_enc_reset_v2(MppEnc ctx)
 {
     MppEncImpl *enc = (MppEncImpl *)ctx;
+    MppThread *thd;
 
     enc_dbg_func("%p in\n", enc);
+
     if (NULL == enc) {
         mpp_err_f("found NULL input enc\n");
         return MPP_ERR_NULL_PTR;
     }
 
-    MppThread *thd = enc->thread_enc;
+    thd = enc->thread_enc;
 
-    thd->lock(THREAD_CONTROL);
+    mpp_thread_lock(thd, THREAD_CONTROL);
     enc->reset_flag = 1;
     mpp_enc_notify_v2(enc, MPP_ENC_RESET);
-    thd->unlock(THREAD_CONTROL);
+    mpp_thread_unlock(thd, THREAD_CONTROL);
+
     sem_wait(&enc->enc_reset);
     mpp_assert(enc->reset_flag == 0);
 
@@ -286,16 +292,16 @@ MPP_RET mpp_enc_reset_v2(MppEnc ctx)
 MPP_RET mpp_enc_notify_v2(MppEnc ctx, RK_U32 flag)
 {
     MppEncImpl *enc = (MppEncImpl *)ctx;
-
-    enc_dbg_func("%p in flag %08x\n", enc, flag);
     MppThread *thd  = enc->thread_enc;
 
-    thd->lock();
+    enc_dbg_func("%p in flag %08x\n", enc, flag);
+
+    mpp_thread_lock(thd, THREAD_WORK);
     if (flag == MPP_ENC_CONTROL) {
         enc->notify_flag |= flag;
         enc_dbg_notify("%p status %08x notify control signal\n", enc,
                        enc->status_flag);
-        thd->signal();
+        mpp_thread_signal(thd, THREAD_WORK);
     } else {
         RK_U32 old_flag = enc->notify_flag;
 
@@ -304,10 +310,10 @@ MPP_RET mpp_enc_notify_v2(MppEnc ctx, RK_U32 flag)
             (enc->notify_flag & enc->status_flag)) {
             enc_dbg_notify("%p status %08x notify %08x signal\n", enc,
                            enc->status_flag, enc->notify_flag);
-            thd->signal();
+            mpp_thread_signal(thd, THREAD_WORK);
         }
     }
-    thd->unlock();
+    mpp_thread_unlock(thd, THREAD_WORK);
     enc_dbg_func("%p out\n", enc);
     return MPP_OK;
 }
@@ -321,6 +327,7 @@ MPP_RET mpp_enc_notify_v2(MppEnc ctx, RK_U32 flag)
 MPP_RET mpp_enc_control_v2(MppEnc ctx, MpiCmd cmd, void *param)
 {
     MppEncImpl *enc = (MppEncImpl *)ctx;
+    MPP_RET ret = MPP_OK;
 
     if (NULL == enc) {
         mpp_err_f("found NULL enc\n");
@@ -332,15 +339,22 @@ MPP_RET mpp_enc_control_v2(MppEnc ctx, MpiCmd cmd, void *param)
         return MPP_ERR_NULL_PTR;
     }
 
-    AutoMutex auto_lock(&enc->lock);
-    MPP_RET ret = MPP_OK;
+    mpp_mutex_lock(&enc->lock);
 
     enc_dbg_ctrl("sending cmd %d param %p\n", cmd, param);
 
     switch (cmd) {
     case MPP_ENC_GET_CFG : {
-        MppEncCfgImpl *p = (MppEncCfgImpl *)param;
-        MppEncCfgSet *cfg = &p->cfg;
+        MppEncCfgImpl *impl = (MppEncCfgImpl *)param;
+        MppEncCfgSet *cfg;
+
+        if (impl->is_kobj) {
+            mpp_loge("can not MPP_ENC_GET_CFG by kobj %p\n", impl);
+            ret = MPP_NOK;
+            break;
+        }
+
+        cfg = impl->cfg;
 
         enc_dbg_ctrl("get all config\n");
         memcpy(cfg, &enc->cfg, sizeof(enc->cfg));
@@ -356,17 +370,24 @@ MPP_RET mpp_enc_control_v2(MppEnc ctx, MpiCmd cmd, void *param)
         cfg->split.change = 0;
         cfg->tune.change = 0;
     } break;
-    case MPP_ENC_GET_PREP_CFG : {
-        enc_dbg_ctrl("get prep config\n");
-        memcpy(param, &enc->cfg.prep, sizeof(enc->cfg.prep));
-    } break;
-    case MPP_ENC_GET_RC_CFG : {
-        enc_dbg_ctrl("get rc config\n");
-        memcpy(param, &enc->cfg.rc, sizeof(enc->cfg.rc));
-    } break;
-    case MPP_ENC_GET_CODEC_CFG : {
-        enc_dbg_ctrl("get codec config\n");
-        memcpy(param, &enc->cfg.codec, sizeof(enc->cfg.codec));
+    case MPP_ENC_SET_PREP_CFG :
+    case MPP_ENC_GET_PREP_CFG :
+    case MPP_ENC_SET_RC_CFG :
+    case MPP_ENC_GET_RC_CFG :
+    case MPP_ENC_SET_CODEC_CFG :
+    case MPP_ENC_GET_CODEC_CFG :
+    case MPP_ENC_SET_SPLIT :
+    case MPP_ENC_GET_SPLIT : {
+        mpp_loge("deprecated %s control use MPP_ENC_GET_CFG / MPP_ENC_SET_CFG instead\n",
+                 cmd == MPP_ENC_SET_PREP_CFG ? "MPP_ENC_SET_PREP_CFG" :
+                 cmd == MPP_ENC_GET_PREP_CFG ? "MPP_ENC_GET_PREP_CFG" :
+                 cmd == MPP_ENC_SET_RC_CFG ? "MPP_ENC_SET_RC_CFG" :
+                 cmd == MPP_ENC_GET_RC_CFG ? "MPP_ENC_GET_RC_CFG" :
+                 cmd == MPP_ENC_SET_CODEC_CFG ? "MPP_ENC_SET_CODEC_CFG" :
+                 cmd == MPP_ENC_GET_CODEC_CFG ? "MPP_ENC_GET_CODEC_CFG" :
+                 cmd == MPP_ENC_SET_SPLIT ? "MPP_ENC_SET_SPLIT" :
+                 cmd == MPP_ENC_GET_SPLIT ? "MPP_ENC_GET_SPLIT" : "unknown");
+        ret = MPP_NOK;
     } break;
     case MPP_ENC_GET_HEADER_MODE : {
         enc_dbg_ctrl("get header mode\n");
@@ -378,6 +399,17 @@ MPP_RET mpp_enc_control_v2(MppEnc ctx, MpiCmd cmd, void *param)
     } break;
     default : {
         // Cmd which is not get configure will handle by enc_impl
+        if (cmd == MPP_ENC_SET_CFG) {
+            MppEncCfgImpl *impl = (MppEncCfgImpl *)param;
+
+            if (impl->is_kobj) {
+                mpp_loge("can not MPP_ENC_SET_CFG by kobj %p\n", impl);
+                ret = MPP_NOK;
+                break;
+            }
+            param = impl->cfg;
+        }
+
         enc->cmd = cmd;
         enc->param = param;
         enc->cmd_ret = &ret;
@@ -392,6 +424,9 @@ MPP_RET mpp_enc_control_v2(MppEnc ctx, MpiCmd cmd, void *param)
     } break;
     }
 
+    mpp_mutex_unlock(&enc->lock);
+
     enc_dbg_ctrl("sending cmd %d done\n", cmd);
+
     return ret;
 }

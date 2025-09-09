@@ -13,8 +13,8 @@
 #include "mpp_buffer_impl.h"
 
 // #include "av1.h"
-#include "hal_av1d_vdpu383_reg.h"
 #include "hal_av1d_common.h"
+#include "vdpu383_av1d.h"
 #include "vdpu383_com.h"
 
 #include "av1d_syntax.h"
@@ -136,6 +136,7 @@ typedef struct vcpu383_ref_info_t {
     RK_U32 dpb_idx;
     RK_U32 seg_idx;
     RK_U32 colmv_exist_flag;
+    RK_U32 cdf_valid;
     RK_U32 coeff_idx;
     RK_U32 mi_rows;
     RK_U32 mi_cols;
@@ -165,9 +166,9 @@ typedef struct VdpuAv1dRegCtx_t {
     vdpu383RefInfo  ref_info_tbl[NUM_REF_FRAMES];
 
     MppBuffer       cdf_rd_def_base;
-    HalBufs         cdf_bufs;
-    RK_U32          cdf_count;
-    RK_U32          cdf_size;
+    HalBufs         cdf_segid_bufs;
+    RK_U32          cdf_segid_count;
+    RK_U32          cdf_segid_size;
     RK_U32          cdf_coeff_cdf_idxs[NUM_REF_FRAMES];
     // RK_U32          cdfs_last[NUM_REF_FRAMES];
 
@@ -1353,9 +1354,9 @@ static void hal_av1d_release_res(void *hal)
         BUF_PUT(reg_ctx->rcb_bufs[i]);
 
     vdpu_av1d_filtermem_release(reg_ctx);
-    if (reg_ctx->cdf_bufs) {
-        hal_bufs_deinit(reg_ctx->cdf_bufs);
-        reg_ctx->cdf_bufs = NULL;
+    if (reg_ctx->cdf_segid_bufs) {
+        hal_bufs_deinit(reg_ctx->cdf_segid_bufs);
+        reg_ctx->cdf_segid_bufs = NULL;
     }
     if (reg_ctx->colmv_bufs) {
         hal_bufs_deinit(reg_ctx->colmv_bufs);
@@ -1893,7 +1894,7 @@ static void av1d_refine_rcb_size(Vdpu383RcbInfo *rcb_info,
     if (width > 4096)
         filterd_row_append = 27648;
     rcb_bits = (RK_U32)(MPP_ALIGN(width, 64) * (32 * bit_depth + 10));
-    rcb_info[RCB_FILTERD_ROW].size = MPP_RCB_BYTES(rcb_bits / 2);
+    rcb_info[RCB_FILTERD_ROW].size = filterd_row_append + MPP_RCB_BYTES(rcb_bits / 2);
     rcb_info[RCB_FILTERD_PROTECT_ROW].size = filterd_row_append + MPP_RCB_BYTES(rcb_bits / 2);
     rcb_bits += ext_row_align_size;
     if (tile_row_num > 1)
@@ -1957,29 +1958,29 @@ static void vdpu383_av1d_rcb_reg_cfg(Av1dHalCtx *p_hal, MppBuffer buf)
     RK_U32 fd = mpp_buffer_get_fd(buf);
     RK_U32 i;
 
-    regs->rcb_paras.reg140_rcb_strmd_row_offset           = fd;
-    regs->rcb_paras.reg142_rcb_strmd_tile_row_offset      = fd;
-    regs->rcb_paras.reg144_rcb_inter_row_offset           = fd;
-    regs->rcb_paras.reg146_rcb_inter_tile_row_offset      = fd;
-    regs->rcb_paras.reg148_rcb_intra_row_offset           = fd;
-    regs->rcb_paras.reg150_rcb_intra_tile_row_offset      = fd;
-    regs->rcb_paras.reg152_rcb_filterd_row_offset         = fd;
-    regs->rcb_paras.reg154_rcb_filterd_protect_row_offset = fd;
-    regs->rcb_paras.reg156_rcb_filterd_tile_row_offset    = fd;
-    regs->rcb_paras.reg158_rcb_filterd_tile_col_offset    = fd;
-    regs->rcb_paras.reg160_rcb_filterd_av1_upscale_tile_col_offset = fd;
+    regs->common_addr.reg140_rcb_strmd_row_offset           = fd;
+    regs->common_addr.reg142_rcb_strmd_tile_row_offset      = fd;
+    regs->common_addr.reg144_rcb_inter_row_offset           = fd;
+    regs->common_addr.reg146_rcb_inter_tile_row_offset      = fd;
+    regs->common_addr.reg148_rcb_intra_row_offset           = fd;
+    regs->common_addr.reg150_rcb_intra_tile_row_offset      = fd;
+    regs->common_addr.reg152_rcb_filterd_row_offset         = fd;
+    regs->common_addr.reg154_rcb_filterd_protect_row_offset = fd;
+    regs->common_addr.reg156_rcb_filterd_tile_row_offset    = fd;
+    regs->common_addr.reg158_rcb_filterd_tile_col_offset    = fd;
+    regs->common_addr.reg160_rcb_filterd_av1_upscale_tile_col_offset = fd;
 
-    regs->rcb_paras.reg141_rcb_strmd_row_len            = reg_ctx->rcb_buf_info[RCB_STRMD_ROW].size;
-    regs->rcb_paras.reg143_rcb_strmd_tile_row_len       = reg_ctx->rcb_buf_info[RCB_STRMD_TILE_ROW].size;
-    regs->rcb_paras.reg145_rcb_inter_row_len            = reg_ctx->rcb_buf_info[RCB_INTER_ROW].size;
-    regs->rcb_paras.reg147_rcb_inter_tile_row_len       = reg_ctx->rcb_buf_info[RCB_INTER_TILE_ROW].size;
-    regs->rcb_paras.reg149_rcb_intra_row_len            = reg_ctx->rcb_buf_info[RCB_INTRA_ROW].size;
-    regs->rcb_paras.reg151_rcb_intra_tile_row_len       = reg_ctx->rcb_buf_info[RCB_INTRA_TILE_ROW].size;
-    regs->rcb_paras.reg153_rcb_filterd_row_len          = reg_ctx->rcb_buf_info[RCB_FILTERD_ROW].size;
-    regs->rcb_paras.reg155_rcb_filterd_protect_row_len  = reg_ctx->rcb_buf_info[RCB_FILTERD_PROTECT_ROW].size;
-    regs->rcb_paras.reg157_rcb_filterd_tile_row_len     = reg_ctx->rcb_buf_info[RCB_FILTERD_TILE_ROW].size;
-    regs->rcb_paras.reg159_rcb_filterd_tile_col_len     = reg_ctx->rcb_buf_info[RCB_FILTERD_TILE_COL].size;
-    regs->rcb_paras.reg161_rcb_filterd_av1_upscale_tile_col_len  = reg_ctx->rcb_buf_info[RCB_FILTERD_AV1_UP_TILE_COL].size;
+    regs->common_addr.reg141_rcb_strmd_row_len            = reg_ctx->rcb_buf_info[RCB_STRMD_ROW].size;
+    regs->common_addr.reg143_rcb_strmd_tile_row_len       = reg_ctx->rcb_buf_info[RCB_STRMD_TILE_ROW].size;
+    regs->common_addr.reg145_rcb_inter_row_len            = reg_ctx->rcb_buf_info[RCB_INTER_ROW].size;
+    regs->common_addr.reg147_rcb_inter_tile_row_len       = reg_ctx->rcb_buf_info[RCB_INTER_TILE_ROW].size;
+    regs->common_addr.reg149_rcb_intra_row_len            = reg_ctx->rcb_buf_info[RCB_INTRA_ROW].size;
+    regs->common_addr.reg151_rcb_intra_tile_row_len       = reg_ctx->rcb_buf_info[RCB_INTRA_TILE_ROW].size;
+    regs->common_addr.reg153_rcb_filterd_row_len          = reg_ctx->rcb_buf_info[RCB_FILTERD_ROW].size;
+    regs->common_addr.reg155_rcb_filterd_protect_row_len  = reg_ctx->rcb_buf_info[RCB_FILTERD_PROTECT_ROW].size;
+    regs->common_addr.reg157_rcb_filterd_tile_row_len     = reg_ctx->rcb_buf_info[RCB_FILTERD_TILE_ROW].size;
+    regs->common_addr.reg159_rcb_filterd_tile_col_len     = reg_ctx->rcb_buf_info[RCB_FILTERD_TILE_COL].size;
+    regs->common_addr.reg161_rcb_filterd_av1_upscale_tile_col_len  = reg_ctx->rcb_buf_info[RCB_FILTERD_AV1_UP_TILE_COL].size;
 
     for (i = 0; i < RCB_BUF_COUNT; i++)
         mpp_dev_set_reg_offset(p_hal->dev, reg_ctx->rcb_buf_info[i].reg_idx, reg_ctx->rcb_buf_info[i].offset);
@@ -2017,35 +2018,55 @@ static MPP_RET vdpu383_av1d_cdf_setup(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxv
 {
     MPP_RET ret = MPP_ERR_UNKNOW;
     Vdpu383Av1dRegCtx *reg_ctx = (Vdpu383Av1dRegCtx *)p_hal->reg_ctx;
+    size_t size = 0;
+    size_t segid_size = (MPP_ALIGN(dxva->width, 128) / 128) * \
+                        (MPP_ALIGN(dxva->height, 128) / 128) * \
+                        32 * 16;
+    size = ALL_CDF_SIZE + segid_size;
 
     /* the worst case is the frame is error with whole frame */
-    if (reg_ctx->cdf_bufs == NULL) {
-        size_t size = ALL_CDF_SIZE;
-        size_t segid_size = (MPP_ALIGN(dxva->width, 128) / 128) * \
-                            (MPP_ALIGN(dxva->height, 128) / 128) * \
-                            32 * 16;
-
-        size += segid_size;
-
-        if (reg_ctx->cdf_bufs) {
-            hal_bufs_deinit(reg_ctx->cdf_bufs);
-            reg_ctx->cdf_bufs = NULL;
+    if (reg_ctx->cdf_segid_bufs == NULL || reg_ctx->cdf_segid_size < size) {
+        if (reg_ctx->cdf_segid_bufs) {
+            hal_bufs_deinit(reg_ctx->cdf_segid_bufs);
+            reg_ctx->cdf_segid_bufs = NULL;
         }
 
-        hal_bufs_init(&reg_ctx->cdf_bufs);
-        if (reg_ctx->cdf_bufs == NULL) {
+        hal_bufs_init(&reg_ctx->cdf_segid_bufs);
+        if (reg_ctx->cdf_segid_bufs == NULL) {
             mpp_err_f("cdf bufs init fail");
             goto __RETURN;
         }
 
-        reg_ctx->cdf_size = size;
-        reg_ctx->cdf_count = mpp_buf_slot_get_count(p_hal->slots);
-        hal_bufs_setup(reg_ctx->cdf_bufs, reg_ctx->cdf_count, 1, &size);
+        reg_ctx->cdf_segid_size = size;
+        reg_ctx->cdf_segid_count = mpp_buf_slot_get_count(p_hal->slots);
+        hal_bufs_setup(reg_ctx->cdf_segid_bufs, reg_ctx->cdf_segid_count, 1, &size);
     }
 
 __RETURN:
     return ret;
 }
+
+/*
+ * cdf buf structure:
+ *
+ *      base_addr0 +--------------------------+
+ *      434x128bit |   def_non_coeff_cdf      |
+ *  base_addr0+433 +--------------------------+
+ *
+ *      base_addr1 +--------------------------+
+ *      354x128bit |     def_coeff_cdf_0      |
+ *                 |   (base_q_idx <= 20)     |
+ *                 +--------------------------+
+ *      354x128bit |     def_coeff_cdf_1      |
+ *                 | (20 < base_q_idx <= 60)  |
+ *                 +--------------------------+
+ *      354x128bit |     def_coeff_cdf_2      |
+ *                 | (60 < base_q_idx <= 120) |
+ *                 +--------------------------+
+ *      354x128bit |     def_coeff_cdf_3      |
+ *                 |   (base_q_idx > 120)     |
+ * base_addr1+1415 +--------------------------+
+ */
 
 static void vdpu383_av1d_set_cdf(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
 {
@@ -2065,16 +2086,16 @@ static void vdpu383_av1d_set_cdf(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
         sprintf(dump_cur_fname_path, "%s/%s", dump_cur_dir, cur_fname);
     }
 #endif
-    if (dxva->format.frame_type == AV1_FRAME_KEY || dxva->primary_ref_frame == 7 /* AV1_PRIMARY_REF_NONE */) {
-        if (dxva->quantization.base_qindex <= 20)
-            coeff_cdf_idx = 0;
-        else if (dxva->quantization.base_qindex <= 60)
-            coeff_cdf_idx = 1;
-        else if (dxva->quantization.base_qindex <= 120)
-            coeff_cdf_idx = 2;
-        else
-            coeff_cdf_idx = 3;
+    if (dxva->format.frame_type == AV1_FRAME_KEY)
+        for (i = 0; i < NUM_REF_FRAMES; i++)
+            reg_ctx->ref_info_tbl[i].cdf_valid = 0;
+    /* def coeff cdf idx */
+    coeff_cdf_idx = dxva->quantization.base_qindex <= 20 ? 0 :
+                    dxva->quantization.base_qindex <= 60  ? 1 :
+                    dxva->quantization.base_qindex <= 120 ? 2 : 3;
 
+    if (dxva->format.frame_type == AV1_FRAME_KEY ||
+        dxva->primary_ref_frame == 7) { /* AV1_PRIMARY_REF_NONE */
         regs->av1d_addrs.reg184_av1_noncoef_rd_base = mpp_buffer_get_fd(reg_ctx->cdf_rd_def_base);
         regs->av1d_addrs.reg178_av1_coef_rd_base = mpp_buffer_get_fd(reg_ctx->cdf_rd_def_base);
 #ifdef DUMP_AV1D_VDPU383_DATAS
@@ -2090,8 +2111,9 @@ static void vdpu383_av1d_set_cdf(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
         mapped_idx = dxva->ref_frame_idx[dxva->primary_ref_frame];
 
         coeff_cdf_idx = reg_ctx->ref_info_tbl[mapped_idx].coeff_idx;
-        if (!dxva->coding.disable_frame_end_update_cdf) {
-            cdf_buf = hal_bufs_get_buf(reg_ctx->cdf_bufs, dxva->frame_refs[mapped_idx].Index);
+        if (!dxva->coding.disable_frame_end_update_cdf &&
+            reg_ctx->ref_info_tbl[mapped_idx].cdf_valid) {
+            cdf_buf = hal_bufs_get_buf(reg_ctx->cdf_segid_bufs, dxva->frame_refs[mapped_idx].Index);
             buf_tmp = cdf_buf->buf[0];
         } else {
             buf_tmp = reg_ctx->cdf_rd_def_base;
@@ -2109,7 +2131,7 @@ static void vdpu383_av1d_set_cdf(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
         }
 #endif
     }
-    cdf_buf = hal_bufs_get_buf(reg_ctx->cdf_bufs, dxva->CurrPic.Index7Bits);
+    cdf_buf = hal_bufs_get_buf(reg_ctx->cdf_segid_bufs, dxva->CurrPic.Index7Bits);
     regs->av1d_addrs.reg185_av1_noncoef_wr_base = mpp_buffer_get_fd(cdf_buf->buf[0]);
     regs->av1d_addrs.reg179_av1_coef_wr_base = mpp_buffer_get_fd(cdf_buf->buf[0]);
     regs->av1d_addrs.reg182_av1_wr_segid_base = mpp_buffer_get_fd(cdf_buf->buf[0]);
@@ -2130,6 +2152,7 @@ static void vdpu383_av1d_set_cdf(Av1dHalCtx *p_hal, DXVA_PicParams_AV1 *dxva)
                 else
                     reg_ctx->ref_info_tbl[i].coeff_idx = coeff_cdf_idx;
             } else {
+                reg_ctx->ref_info_tbl[i].cdf_valid = 1;
                 reg_ctx->ref_info_tbl[i].coeff_idx = 0;
             }
         }
@@ -2253,7 +2276,7 @@ MPP_RET vdpu383_av1d_gen_regs(void *hal, HalTaskInfo *task)
         prepare_uncompress_header(p_hal, dxva, (RK_U64 *)ctx->header_data, sizeof(ctx->header_data) / 8);
         memcpy((char *)ctx->bufs_ptr, (void *)ctx->header_data, sizeof(ctx->header_data));
         regs->av1d_paras.reg67_global_len = VDPU383_UNCMPS_HEADER_SIZE / 16; // 128 bit as unit
-        regs->com_pkt_addr.reg131_gbl_base = ctx->bufs_fd;
+        regs->common_addr.reg131_gbl_base = ctx->bufs_fd;
         // mpp_dev_set_reg_offset(p_hal->dev, 131, ctx->offset_uncomps);
 #ifdef DUMP_AV1D_VDPU383_DATAS
         {
@@ -2268,7 +2291,7 @@ MPP_RET vdpu383_av1d_gen_regs(void *hal, HalTaskInfo *task)
         p_hal->strm_len = (RK_S32)mpp_packet_get_length(task->dec.input_packet);
         regs->av1d_paras.reg66_stream_len = MPP_ALIGN(p_hal->strm_len + 15, 128);
         mpp_buf_slot_get_prop(p_hal->packet_slots, task->dec.input, SLOT_BUFFER, &mbuffer);
-        regs->com_pkt_addr.reg128_strm_base = mpp_buffer_get_fd(mbuffer);
+        regs->common_addr.reg128_strm_base = mpp_buffer_get_fd(mbuffer);
         regs->av1d_paras.reg65_strm_start_bit = (ctx->offset_uncomps & 0xf) * 8; // bit start to decode
         mpp_dev_set_reg_offset(p_hal->dev, 128, ctx->offset_uncomps & 0xfffffff0);
         /* error */
@@ -2383,26 +2406,6 @@ MPP_RET vdpu383_av1d_gen_regs(void *hal, HalTaskInfo *task)
             }
         }
 
-        // regs->av1d_addrs.reg192_payload_st_cur_base;
-        // regs->av1d_addrs.reg193_fbc_payload_offset;
-        // regs->av1d_addrs.reg194_payload_st_error_ref_base;
-        // regs->av1d_addrs.reg195_payload_st_ref0_base;
-        // regs->av1d_addrs.reg196_payload_st_ref1_base;
-        // regs->av1d_addrs.reg197_payload_st_ref2_base;
-        // regs->av1d_addrs.reg198_payload_st_ref3_base;
-        // regs->av1d_addrs.reg199_payload_st_ref4_base;
-        // regs->av1d_addrs.reg200_payload_st_ref5_base;
-        // regs->av1d_addrs.reg201_payload_st_ref6_base;
-        // regs->av1d_addrs.reg202_payload_st_ref7_base;
-        // regs->av1d_addrs.reg203_payload_st_ref8_base;
-        // regs->av1d_addrs.reg204_payload_st_ref9_base;
-        // regs->av1d_addrs.reg205_payload_st_ref10_base;
-        // regs->av1d_addrs.reg206_payload_st_ref11_base;
-        // regs->av1d_addrs.reg207_payload_st_ref12_base;
-        // regs->av1d_addrs.reg208_payload_st_ref13_base;
-        // regs->av1d_addrs.reg209_payload_st_ref14_base;
-        // regs->av1d_addrs.reg210_payload_st_ref15_base;
-
         HalBuf *mv_buf = NULL;
         vdpu383_av1d_colmv_setup(p_hal, dxva);
         mv_buf = hal_bufs_get_buf(ctx->colmv_bufs, dxva->CurrPic.Index7Bits);
@@ -2447,7 +2450,7 @@ MPP_RET vdpu383_av1d_gen_regs(void *hal, HalTaskInfo *task)
 
         switch (thumbnail_mode) {
         case MPP_FRAME_THUMBNAIL_ONLY:
-            regs->com_pkt_addr.reg133_scale_down_tile_base = fd;
+            regs->common_addr.reg133_scale_down_base = fd;
             origin_buf = hal_bufs_get_buf(ctx->origin_bufs, dxva->CurrPic.Index7Bits);
             fd = mpp_buffer_get_fd(origin_buf->buf[0]);
             regs->av1d_addrs.reg168_decout_base = fd;
@@ -2457,7 +2460,7 @@ MPP_RET vdpu383_av1d_gen_regs(void *hal, HalTaskInfo *task)
                                      (void *)&regs->av1d_paras);
             break;
         case MPP_FRAME_THUMBNAIL_MIXED:
-            regs->com_pkt_addr.reg133_scale_down_tile_base = fd;
+            regs->common_addr.reg133_scale_down_base = fd;
             vdpu383_setup_down_scale(mframe, p_hal->dev, &regs->ctrl_regs,
                                      (void *)&regs->av1d_paras);
             break;
@@ -2500,18 +2503,9 @@ MPP_RET vdpu383_av1d_start(void *hal, HalTaskInfo *task)
             break;
         }
 
-        wr_cfg.reg = &regs->com_pkt_addr;
-        wr_cfg.size = sizeof(regs->com_pkt_addr);
+        wr_cfg.reg = &regs->common_addr;
+        wr_cfg.size = sizeof(regs->common_addr);
         wr_cfg.offset = OFFSET_COMMON_ADDR_REGS;
-        ret = mpp_dev_ioctl(dev, MPP_DEV_REG_WR, &wr_cfg);
-        if (ret) {
-            mpp_err_f("set register write failed %d\n", ret);
-            break;
-        }
-
-        wr_cfg.reg = &regs->rcb_paras;
-        wr_cfg.size = sizeof(regs->rcb_paras);
-        wr_cfg.offset = OFFSET_RCB_PARAS_REGS;
         ret = mpp_dev_ioctl(dev, MPP_DEV_REG_WR, &wr_cfg);
         if (ret) {
             mpp_err_f("set register write failed %d\n", ret);
@@ -2614,7 +2608,7 @@ MPP_RET vdpu383_av1d_wait(void *hal, HalTaskInfo *task)
         DXVA_PicParams_AV1 *dxva = (DXVA_PicParams_AV1*)task->dec.syntax.data;
         memset(dump_cur_fname_path, 0, sizeof(dump_cur_fname_path));
         sprintf(dump_cur_fname_path, "%s/%s", dump_cur_dir, cur_fname);
-        cdf_buf = hal_bufs_get_buf(reg_ctx->cdf_bufs, dxva->CurrPic.Index7Bits);
+        cdf_buf = hal_bufs_get_buf(reg_ctx->cdf_segid_bufs, dxva->CurrPic.Index7Bits);
         dump_data_to_file(dump_cur_fname_path, (void *)mpp_buffer_get_ptr(cdf_buf->buf[0]),
                           (NON_COEF_CDF_SIZE + COEF_CDF_SIZE) * 8, 128, 0, 0);
     }

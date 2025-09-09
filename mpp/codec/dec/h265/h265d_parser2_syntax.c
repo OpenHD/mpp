@@ -58,6 +58,8 @@ static void fill_picture_parameters(const HEVCContext *h,
     const HEVCSPS *sps = (HEVCSPS *)h->sps_list[pps->sps_id];
     const ShortTermRPS *src_rps = sps->st_rps;
     Short_SPS_RPS_HEVC *dst_rps = pp->sps_st_rps;
+    const ShortTermRPS *cur_src_rps = h->sh.short_term_rps;
+    Short_SPS_RPS_HEVC *cur_dst_rps = &pp->cur_st_rps;
 
     RK_U32 i, j;
     RK_U32 rps_used[16];
@@ -140,10 +142,7 @@ static void fill_picture_parameters(const HEVCContext *h,
 
     pp->IdrPicFlag = (h->first_nal_type == 19 || h->first_nal_type == 20);
     pp->IrapPicFlag = (h->first_nal_type >= 16 && h->first_nal_type <= 23);
-    pp->IntraPicFlag =  (h->first_nal_type >= 16 && h->first_nal_type <= 23) ||
-                        (h->sh.slice_type == I_SLICE || (h->recovery.valid_flag &&
-                                                         h->recovery.first_frm_valid &&
-                                                         h->recovery.first_frm_id == current_picture->poc));
+    pp->IntraPicFlag =  (h->first_nal_type >= 16 && h->first_nal_type <= 23) || h->sh.slice_type == I_SLICE;
     pp->pps_cb_qp_offset            = pps->cb_qp_offset;
     pp->pps_cr_qp_offset            = pps->cr_qp_offset;
     if (pps->tiles_enabled_flag) {
@@ -173,6 +172,19 @@ static void fill_picture_parameters(const HEVCContext *h,
             pp->sps_lt_rps[i].used_by_curr_pic_lt_flag = sps->used_by_curr_pic_lt_sps_flag[i];
         }
 
+        if (cur_src_rps) {
+            RK_U32 n_pics = h->sh.short_term_rps->num_negative_pics;
+            cur_dst_rps->num_negative_pics = n_pics;
+            cur_dst_rps->num_positive_pics = cur_src_rps->num_delta_pocs - n_pics;
+            for (i = 0; i < cur_dst_rps->num_negative_pics; i++) {
+                cur_dst_rps->delta_poc_s0[i] = cur_src_rps->delta_poc[i];
+                cur_dst_rps->s0_used_flag[i] = cur_src_rps->used[i];
+            }
+            for (i = 0; i < cur_dst_rps->num_positive_pics; i++) {
+                cur_dst_rps->delta_poc_s1[i] = cur_src_rps->delta_poc[i + n_pics];
+                cur_dst_rps->s1_used_flag[i] = cur_src_rps->used[i + n_pics];
+            }
+        }
 
         for (i = 0; i < 64; i++) {
             if (i < sps->nb_st_rps) {

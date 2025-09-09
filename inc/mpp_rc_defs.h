@@ -131,7 +131,8 @@ typedef union EncFrmStatus_u {
         /*
          * When true currnet frame is force to encoded as software skip frame
          */
-        RK_U32          force_pskip     : 1;
+        RK_U32          force_pskip         : 1;
+        RK_U32          force_pskip_is_ref  : 1;
 
         /*
          * Current frame is intra refresh frame
@@ -141,7 +142,6 @@ typedef union EncFrmStatus_u {
          * Current frame needs add recovery point prefix
          */
         RK_U32          is_i_recovery   : 1;
-        RK_U32          reserved1       : 1;
 
         /* reencode times */
         RK_U32          reencode_times  : 8;
@@ -197,6 +197,8 @@ typedef struct EncRcCommonInfo_t {
     RK_S32          quality_real;
     RK_S32          madi;
     RK_S32          madp;
+    /* average of down scaled pixels of luma */
+    RK_U32          dsp_y_avg;
 
     RK_U32          iblk4_prop; // scale 256
 

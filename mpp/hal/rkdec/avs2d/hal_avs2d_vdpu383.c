@@ -309,7 +309,7 @@ static void avs2d_refine_rcb_size(Vdpu383RcbInfo *rcb_info,
     if (width > 4096)
         filterd_row_append = 27648;
     rcb_bits = MPP_ALIGN(width, 64) * (30 * bit_depth + 9);
-    rcb_info[RCB_FILTERD_ROW].size = MPP_RCB_BYTES(rcb_bits / 2);
+    rcb_info[RCB_FILTERD_ROW].size = filterd_row_append + MPP_RCB_BYTES(rcb_bits / 2);
     rcb_info[RCB_FILTERD_PROTECT_ROW].size = filterd_row_append + MPP_RCB_BYTES(rcb_bits / 2);
     rcb_info[RCB_FILTERD_TILE_ROW].size = 0;
 
@@ -638,7 +638,8 @@ MPP_RET hal_avs2d_vdpu383_gen_regs(void *hal, HalTaskInfo *task)
     AVS2D_HAL_TRACE("In.");
 
     INP_CHECK(ret, NULL == p_hal);
-    if (task->dec.flags.parse_err || task->dec.flags.ref_err) {
+    if ((task->dec.flags.parse_err || task->dec.flags.ref_err) &&
+        !p_hal->cfg->base.disable_error) {
         ret = MPP_NOK;
         goto __RETURN;
     }
@@ -681,17 +682,12 @@ MPP_RET hal_avs2d_vdpu383_gen_regs(void *hal, HalTaskInfo *task)
         memcpy(reg_ctx->bufs_ptr + reg_ctx->shph_offset, reg_ctx->shph_dat, sizeof(reg_ctx->shph_dat));
         memcpy(reg_ctx->bufs_ptr + reg_ctx->sclst_offset, reg_ctx->scalist_dat, sizeof(reg_ctx->scalist_dat));
 
-        MppDevRegOffsetCfg trans_cfg;
-        trans_cfg.reg_idx = 131;
-        trans_cfg.offset = reg_ctx->shph_offset;
         regs->common_addr.reg131_gbl_base = reg_ctx->bufs_fd;
-        mpp_dev_ioctl(p_hal->dev, MPP_DEV_REG_OFFSET, &trans_cfg);
+        mpp_dev_set_reg_offset(p_hal->dev, 131, reg_ctx->shph_offset);
         regs->avs2d_paras.reg67_global_len = AVS2_383_SHPH_SIZE;
 
-        trans_cfg.reg_idx = 132;
-        trans_cfg.offset = reg_ctx->sclst_offset;
         regs->common_addr.reg132_scanlist_addr = reg_ctx->bufs_fd;
-        mpp_dev_ioctl(p_hal->dev, MPP_DEV_REG_OFFSET, &trans_cfg);
+        mpp_dev_set_reg_offset(p_hal->dev, 132, reg_ctx->sclst_offset);
     }
 
     // set rcb
@@ -722,8 +718,8 @@ MPP_RET hal_avs2d_vdpu383_start(void *hal, HalTaskInfo *task)
     AVS2D_HAL_TRACE("In.");
     INP_CHECK(ret, NULL == p_hal);
 
-    if (task->dec.flags.parse_err ||
-        task->dec.flags.ref_err) {
+    if ((task->dec.flags.parse_err || task->dec.flags.ref_err) &&
+        !p_hal->cfg->base.disable_error) {
         goto __RETURN;
     }
 
@@ -896,7 +892,8 @@ MPP_RET hal_avs2d_vdpu383_wait(void *hal, HalTaskInfo *task)
     reg_ctx = (Avs2dRkvRegCtx_t *)p_hal->reg_ctx;
     regs = p_hal->fast_mode ? reg_ctx->reg_buf[task->dec.reg_index].regs : reg_ctx->regs;
 
-    if (task->dec.flags.parse_err || task->dec.flags.ref_err) {
+    if ((task->dec.flags.parse_err || task->dec.flags.ref_err) &&
+        !p_hal->cfg->base.disable_error) {
         AVS2D_HAL_DBG(AVS2D_HAL_DBG_ERROR, "found task error.\n");
         ret = MPP_NOK;
         goto __RETURN;

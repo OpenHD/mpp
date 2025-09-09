@@ -1216,8 +1216,8 @@ static MPP_RET dpb_split_field(H264dVideoCtx_t *p_Vid, H264_FrameStore_t *fs)
     }
     return ret = MPP_OK;
 __FAILED:
-    mpp_mem_pool_put(p_Vid->pic_st, fs->top_field);
-    mpp_mem_pool_put(p_Vid->pic_st, fs->bottom_field);
+    mpp_mem_pool_put_f(p_Vid->pic_st, fs->top_field);
+    mpp_mem_pool_put_f(p_Vid->pic_st, fs->bottom_field);
     fs->top_field = NULL;
     fs->bottom_field = NULL;
     return ret;
@@ -1796,7 +1796,7 @@ void free_storable_picture(H264_DecCtx_t *p_Dec, H264_StorePic_t *p)
         if (p->mem_malloc_type == Mem_BotOnly) {
             free_dpb_mark(p_Dec, p->mem_mark, BOTTOM_FIELD);
         }
-        mpp_mem_pool_put(p_Dec->p_Vid->pic_st, p);
+        mpp_mem_pool_put_f(p_Dec->p_Vid->pic_st, p);
     }
 }
 
@@ -1810,7 +1810,7 @@ void free_storable_picture(H264_DecCtx_t *p_Dec, H264_StorePic_t *p)
 H264_StorePic_t *alloc_storable_picture(H264dVideoCtx_t *p_Vid, RK_S32 structure)
 {
     MPP_RET ret = MPP_ERR_UNKNOW;
-    H264_StorePic_t *s = mpp_mem_pool_get(p_Vid->pic_st);
+    H264_StorePic_t *s = mpp_mem_pool_get_f(p_Vid->pic_st);
 
     MEM_CHECK(ret, s);
     s->view_id = -1;
@@ -1855,7 +1855,7 @@ RK_U32 get_field_dpb_combine_flag(H264_FrameStore_t *p_last, H264_StorePic_t *p)
                 struct h264_store_pic_t *pic = NULL;
 
                 pic = p_last->structure == TOP_FIELD ? p_last->top_field : p_last->bottom_field;
-                if (pic && !pic->combine_flag)
+                if (pic && pic->mem_mark->mframe && !pic->combine_flag)
                     mpp_frame_set_errinfo(pic->mem_mark->mframe, 1);
             }
         }

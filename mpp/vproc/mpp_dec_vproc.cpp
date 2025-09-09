@@ -46,6 +46,8 @@
 #define VPROC_DBG_RESET         (0x00000004)
 #define VPROC_DBG_DUMP_IN       (0x00000010)
 #define VPROC_DBG_DUMP_OUT      (0x00000020)
+#define VPROC_DBG_IN            (0x00000040)
+#define VPROC_DBG_OUT           (0x00000080)
 
 #define vproc_dbg_func(fmt, ...)  \
     vproc_dbg_f(VPROC_DBG_FUNCTION, fmt, ## __VA_ARGS__);
@@ -53,6 +55,10 @@
     vproc_dbg_f(VPROC_DBG_STATUS, fmt, ## __VA_ARGS__);
 #define vproc_dbg_reset(fmt, ...)  \
     vproc_dbg_f(VPROC_DBG_RESET, fmt, ## __VA_ARGS__);
+#define vproc_dbg_in(fmt, ...)  \
+    vproc_dbg_f(VPROC_DBG_IN, fmt, ## __VA_ARGS__);
+#define vproc_dbg_out(fmt, ...)  \
+    vproc_dbg_f(VPROC_DBG_OUT, fmt, ## __VA_ARGS__);
 
 RK_U32 vproc_debug = 0;
 
@@ -94,35 +100,43 @@ typedef struct MppDecVprocCtxImpl_t {
     MppFrame            prev_frm0;
     RK_S32              prev_idx1;
     MppFrame            prev_frm1;
-    RK_U32              detection;
+    enum IEP2_FF_MODE   pre_ff_mode;
     RK_U32              pd_mode;
     MppBuffer           out_buf0;
     MppBuffer           out_buf1;
+    MppVprocMode        vproc_mode;
+
+    MPP_RET (*set_dei)(MppDecVprocCtx *vproc_ctx, MppFrame frm);
+    MPP_RET (*start_dei)(MppDecVprocCtx *vproc_ctx, RK_U32 mode);
+    MPP_RET (*update_ref)(MppDecVprocCtx *vproc_ctx, MppFrame frm, RK_U32 index);
 } MppDecVprocCtxImpl;
 
 static void dec_vproc_put_frame(Mpp *mpp, MppFrame frame, MppBuffer buf, RK_S64 pts, RK_U32 err)
 {
-    mpp_list *list = mpp->mFrmOut;
+    MppList *list = mpp->mFrmOut;
     MppFrame out = NULL;
     MppFrameImpl *impl = NULL;
 
     mpp_frame_init(&out);
     mpp_frame_copy(out, frame);
-    mpp_frame_set_errinfo(out, err);
     impl = (MppFrameImpl *)out;
     if (pts >= 0)
         impl->pts = pts;
     if (buf)
         impl->buffer = buf;
 
-    list->lock();
-    list->add_at_tail(&out, sizeof(out));
+    impl->errinfo |= err;
 
-    mpp_dbg_pts("output frame pts %lld\n", mpp_frame_get_pts(out));
+    mpp_mutex_cond_lock(&list->cond_lock);
+    mpp_list_add_at_tail(list, &out, sizeof(out));
 
     mpp->mFramePutCount++;
-    list->signal();
-    list->unlock();
+    vproc_dbg_out("Output frame[%d]:poc %d, pts %lld, err 0x%x, dis %x, buf ptr %p\n",
+                  mpp->mFramePutCount, mpp_frame_get_poc(out), mpp_frame_get_pts(out),
+                  mpp_frame_get_errinfo(frame), mpp_frame_get_discard(frame),
+                  mpp_buffer_get_ptr(impl->buffer));
+    mpp_mutex_cond_signal(&list->cond_lock);
+    mpp_mutex_cond_unlock(&list->cond_lock);
 
     if (mpp->mDec)
         mpp_dec_callback(mpp->mDec, MPP_DEC_EVENT_ON_FRM_READY, out);
@@ -134,8 +148,8 @@ static void dec_vproc_clr_prev0(MppDecVprocCtxImpl *ctx)
         if (ctx->prev_frm0) {
             MppBuffer buf = mpp_frame_get_buffer(ctx->prev_frm0);
             RK_S32 fd = (buf) ? (mpp_buffer_get_fd(buf)) : (-1);
-            mpp_log("clearing prev index %d frm %p fd %d\n", ctx->prev_idx0,
-                    ctx->prev_frm0, fd);
+            mpp_log("clearing prev index %d frm %p fd %d, poc%d\n", ctx->prev_idx0,
+                    ctx->prev_frm0, fd, mpp_frame_get_poc(ctx->prev_frm0));
         } else
             mpp_log("clearing nothing\n");
     }
@@ -158,8 +172,8 @@ static void dec_vproc_clr_prev1(MppDecVprocCtxImpl *ctx)
         if (ctx->prev_frm1) {
             MppBuffer buf = mpp_frame_get_buffer(ctx->prev_frm1);
             RK_S32 fd = (buf) ? (mpp_buffer_get_fd(buf)) : (-1);
-            mpp_log("clearing prev index %d frm %p fd %d\n", ctx->prev_idx1,
-                    ctx->prev_frm1, fd);
+            mpp_log("clearing prev index %d frm %p fd %d, poc %d\n", ctx->prev_idx1,
+                    ctx->prev_frm1, fd, mpp_frame_get_poc(ctx->prev_frm1));
         } else
             mpp_log("clearing nothing\n");
     }
@@ -211,32 +225,43 @@ static void dec_vproc_set_img(MppDecVprocCtxImpl *ctx, IepImg *img, RK_S32 fd, I
         mpp_log_f("control %08x failed %d\n", cmd, ret);
 }
 
-// start deinterlace hardware
-static void dec_vproc_start_dei(MppDecVprocCtxImpl *ctx, RK_U32 mode)
+static MPP_RET dec_vproc_start_dei_v1(MppDecVprocCtx *vproc_ctx, RK_U32 mode)
 {
-    MPP_RET ret;
-
-    if (ctx->com_ctx->ver == 1) {
-        ctx->dei_cfg.dei_field_order =
-            (mode & MPP_FRAME_FLAG_TOP_FIRST) ?
-            (IEP_DEI_FLD_ORDER_TOP_FIRST) :
-            (IEP_DEI_FLD_ORDER_BOT_FIRST);
-
-        ret = ctx->com_ctx->ops->control(ctx->iep_ctx,
-                                         IEP_CMD_SET_DEI_CFG, &ctx->dei_cfg);
-        if (ret)
-            mpp_log_f("IEP_CMD_SET_DEI_CFG failed %d\n", ret);
-    }
-
-    ret = ctx->com_ctx->ops->control(ctx->iep_ctx, IEP_CMD_RUN_SYNC, &ctx->dei_info);
+    MPP_RET ret = MPP_OK;
+    MppDecVprocCtxImpl *impl = (MppDecVprocCtxImpl *) vproc_ctx;
+    impl->dei_cfg.dei_field_order = (mode & MPP_FRAME_FLAG_TOP_FIRST) ?
+                                    (IEP_DEI_FLD_ORDER_TOP_FIRST) :
+                                    (IEP_DEI_FLD_ORDER_BOT_FIRST);
+    ret = impl->com_ctx->ops->control(impl->iep_ctx,
+                                      IEP_CMD_SET_DEI_CFG, &impl->dei_cfg);
     if (ret)
-        mpp_log_f("IEP_CMD_RUN_SYNC failed %d\n", ret);
+        mpp_err_f("IEP_CMD_SET_DEI_CFG failed %d\n", ret);
+
+    ret = impl->com_ctx->ops->control(impl->iep_ctx, IEP_CMD_RUN_SYNC, &impl->dei_info);
+    if (ret)
+        mpp_err_f("IEP_CMD_RUN_SYNC failed %d\n", ret);
+
+    return ret;
 }
 
-static void dec_vproc_set_dei_v1(MppDecVprocCtxImpl *ctx, MppFrame frm)
+static MPP_RET dec_vproc_start_dei_v2(MppDecVprocCtx *vproc_ctx, RK_U32 mode)
+{
+    MPP_RET ret = MPP_OK;
+    MppDecVprocCtxImpl *impl = (MppDecVprocCtxImpl *) vproc_ctx;
+    (void)mode;
+
+    ret = impl->com_ctx->ops->control(impl->iep_ctx, IEP_CMD_RUN_SYNC, &impl->dei_info);
+    if (ret)
+        mpp_log_f("IEP_CMD_RUN_SYNC failed %d\n", ret);
+
+    return ret;
+}
+
+static MPP_RET dec_vproc_set_dei_v1(MppDecVprocCtx *vproc_ctx, MppFrame frm)
 {
     MPP_RET ret = MPP_OK;
     IepImg img;
+    MppDecVprocCtxImpl *ctx = (MppDecVprocCtxImpl *)vproc_ctx;
 
     Mpp *mpp = ctx->mpp;
     RK_U32 mode = mpp_frame_get_mode(frm);
@@ -294,7 +319,7 @@ static void dec_vproc_set_dei_v1(MppDecVprocCtxImpl *ctx, MppFrame frm)
         mpp_frame_set_mode(frm, mode);
 
         // start hardware
-        dec_vproc_start_dei(ctx, mode);
+        ctx->start_dei((MppDecVprocCtx *)ctx, mode);
 
         // NOTE: we need to process pts here
         if (mode & MPP_FRAME_FLAG_TOP_FIRST) {
@@ -325,10 +350,12 @@ static void dec_vproc_set_dei_v1(MppDecVprocCtxImpl *ctx, MppFrame frm)
         mpp_frame_set_mode(frm, mode);
 
         // start hardware
-        dec_vproc_start_dei(ctx, mode);
+        ctx->start_dei((MppDecVprocCtx *)ctx, mode);
         dec_vproc_put_frame(mpp, frm, dst0, -1, frame_err);
         ctx->out_buf0 = NULL;
     }
+
+    return ret;
 }
 
 #if DUMP_FILE
@@ -348,154 +375,358 @@ static void dump_mppbuffer(MppBuffer buf, const char *fname, int stride, int hei
 #define dump_mppbuffer(...)
 #endif
 
-static void dec_vproc_set_dei_v2(MppDecVprocCtxImpl *ctx, MppFrame frm)
+static MPP_RET dec_vproc_config_dei_v2(MppDecVprocCtxImpl *ctx, MppFrame frm,
+                                       enum IEP2_DIL_MODE dil_mode)
 {
+    MPP_RET ret = MPP_OK;
+    MppBuffer buf = NULL;
+    RK_S32 fd = -1;
     IepImg img;
-
-    Mpp *mpp = ctx->mpp;
-    RK_U32 mode = mpp_frame_get_mode(frm);
-    MppBuffer buf = mpp_frame_get_buffer(frm);
-    MppBuffer dst0 = ctx->out_buf0;
-    MppBuffer dst1 = ctx->out_buf1;
-    RK_U32 hor_stride = mpp_frame_get_hor_stride(frm);
-    RK_U32 ver_stride = mpp_frame_get_ver_stride(frm);
-    int fd = -1;
+    struct iep2_api_params params;
     iep_com_ops *ops = ctx->com_ctx->ops;
-    RK_U32 frame_err = 0;
+
+    if (!frm) {
+        mpp_err("found NULL pointer frm\n");
+        ret = MPP_ERR_NULL_PTR;
+        return ret;
+    }
+
+    /* default alloc 2 out buffer for IEP */
+    if (!ctx->out_buf0 || !ctx->out_buf1) {
+        mpp_err("found NULL pointer out_buf0 %p out_buf1 %p\n", ctx->out_buf0, ctx->out_buf1);
+        ret = MPP_ERR_NULL_PTR;
+        return ret;
+    }
 
     // setup source IepImg
     dec_vproc_set_img_fmt(&img, frm);
 
     if (vproc_debug & VPROC_DBG_DUMP_IN)
-        dump_mppbuffer(buf, "/data/dump/dump_in.yuv", hor_stride, ver_stride);
+        dump_mppbuffer(buf, "/data/dump/dump_in.yuv", img.vir_w, img.vir_h);
 
-    if (ctx->prev_frm1 && ctx->prev_frm0) {
-
-        struct iep2_api_params params;
-
-        // 5 in 2 out case
-        vproc_dbg_status("5 field in and 2 frame out\n");
-        RK_S64 prev_pts = mpp_frame_get_pts(ctx->prev_frm1);
-        RK_S64 curr_pts = mpp_frame_get_pts(ctx->prev_frm0);
-        RK_S64 first_pts = (prev_pts + curr_pts) / 2;
-
-        // setup source frames
+    vproc_dbg_status("set dil_mode %d\n", dil_mode);
+    // TODO: check the input frame
+    switch (dil_mode) {
+    case IEP2_DIL_MODE_I5O2:
+    case IEP2_DIL_MODE_I5O1T:
+    case IEP2_DIL_MODE_I5O1B:
+    case IEP2_DIL_MODE_DECT: {
+        // require 3 frames
         buf = mpp_frame_get_buffer(ctx->prev_frm0);
         fd = mpp_buffer_get_fd(buf);
         dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_SRC);
-        frame_err = mpp_frame_get_errinfo(ctx->prev_frm0) ||
-                    mpp_frame_get_discard(ctx->prev_frm0);
 
         buf = mpp_frame_get_buffer(frm);
         fd = mpp_buffer_get_fd(buf);
         dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_SRC1);
-        frame_err |= mpp_frame_get_errinfo(frm) ||
-                     mpp_frame_get_discard(frm);
 
         buf = mpp_frame_get_buffer(ctx->prev_frm1);
         fd = mpp_buffer_get_fd(buf);
         dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_SRC2);
-        frame_err |= mpp_frame_get_errinfo(ctx->prev_frm1) ||
-                     mpp_frame_get_discard(ctx->prev_frm0);
+    } break;
+    case IEP2_DIL_MODE_PD: {
+        // require 2 frame
+        buf = mpp_frame_get_buffer(frm);
+        fd = mpp_buffer_get_fd(buf);
+        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_SRC1);
 
-        mpp_assert(dst0);
-        fd = mpp_buffer_get_fd(dst0);
-        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DST);
-
-        mpp_assert(dst1);
-        fd = mpp_buffer_get_fd(dst1);
-        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_DST1);
-
-        params.ptype = IEP2_PARAM_TYPE_MODE;
-
-        if (ctx->detection) {
-            params.param.mode.dil_mode = IEP2_DIL_MODE_DECT;
-        } else if (!ctx->pd_mode) {
-            params.param.mode.dil_mode = IEP2_DIL_MODE_I5O2;
-        } else {
-            params.param.mode.dil_mode = IEP2_DIL_MODE_PD;
+        if (ctx->prev_frm0) {
+            buf = mpp_frame_get_buffer(ctx->prev_frm0);
+            fd = mpp_buffer_get_fd(buf);
+        } else if (ctx->prev_frm1) {
+            buf = mpp_frame_get_buffer(ctx->prev_frm1);
+            fd = mpp_buffer_get_fd(buf);
         }
 
-        params.param.mode.out_mode = IEP2_OUT_MODE_LINE;
+        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_SRC);
+        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_SRC2);
+    } break;
+    case IEP2_DIL_MODE_I2O2:
+    case IEP2_DIL_MODE_I1O1T:
+    case IEP2_DIL_MODE_I1O1B:
+    case IEP2_DIL_MODE_BYPASS:
+    default: {
+        buf = mpp_frame_get_buffer(frm);
+        fd = mpp_buffer_get_fd(buf);
+        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_SRC);
+        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_SRC1);
+        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_SRC2);
+    } break;
+    }
+
+    // setup output
+    fd = mpp_buffer_get_fd(ctx->out_buf0);
+    dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DST);
+    fd = mpp_buffer_get_fd(ctx->out_buf1);
+    dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_DST1);
+
+    memset(&params, 0, sizeof(params));
+    params.ptype = IEP2_PARAM_TYPE_MODE;
+    params.param.mode.dil_mode = dil_mode;
+    params.param.mode.out_mode = IEP2_OUT_MODE_LINE;
+    {
+        RK_U32 mode = mpp_frame_get_mode(frm);
+        RK_U32 fo_from_syntax = (mode & MPP_FRAME_FLAG_TOP_FIRST) ? 1 : 0;
+
+        /* refer to syntax */
         if ((mode & MPP_FRAME_FLAG_TOP_FIRST) && (mode & MPP_FRAME_FLAG_BOT_FIRST))
             params.param.mode.dil_order = IEP2_FIELD_ORDER_UND;
-        else if (mode & MPP_FRAME_FLAG_BOT_FIRST)
-            params.param.mode.dil_order = IEP2_FIELD_ORDER_BFF;
-        else
+        else if (fo_from_syntax)
             params.param.mode.dil_order = IEP2_FIELD_ORDER_TFF;
+        else
+            params.param.mode.dil_order = IEP2_FIELD_ORDER_BFF;
 
-        ops->control(ctx->iep_ctx, IEP_CMD_SET_DEI_CFG, &params);
+        /* refer to IEP */
+        if (ctx->pre_ff_mode == IEP2_FF_MODE_FIELD) {
+            RK_U32 fo_from_iep = (ctx->dei_info.dil_order == IEP2_FIELD_ORDER_UND) ?
+                                 fo_from_syntax : (ctx->dei_info.dil_order == IEP2_FIELD_ORDER_TFF);
+            RK_U32 is_tff = 0;
 
-        params.ptype = IEP2_PARAM_TYPE_COM;
-        params.param.com.sfmt = IEP2_FMT_YUV420;
-        params.param.com.dfmt = IEP2_FMT_YUV420;
-        params.param.com.sswap = IEP2_YUV_SWAP_SP_UV;
-        params.param.com.dswap = IEP2_YUV_SWAP_SP_UV;
-        params.param.com.width = mpp_frame_get_width(frm);//img.act_w;
-        params.param.com.hor_stride = hor_stride;//img.act_w;
-        params.param.com.height = ver_stride;
+            if (fo_from_iep != fo_from_syntax) {
+                if (ctx->dei_info.dil_order_confidence_ratio > 30)
+                    is_tff = fo_from_iep;
+                else
+                    is_tff = fo_from_syntax;
+            } else {
+                is_tff = fo_from_syntax;
+            }
 
-        ops->control(ctx->iep_ctx, IEP_CMD_SET_DEI_CFG, &params);
+            if (is_tff)
+                params.param.mode.dil_order = IEP2_FIELD_ORDER_TFF;
+            else
+                params.param.mode.dil_order = IEP2_FIELD_ORDER_BFF;
 
-        if (!ctx->detection) {
-            mode = mode | MPP_FRAME_FLAG_IEP_DEI_I4O2;
-            mpp_frame_set_mode(frm, mode);
+            vproc_dbg_status("Config field order: is TFF %d, syn %d vs iep %d\n",
+                             is_tff, fo_from_syntax, fo_from_iep);
         }
+    }
+    ops->control(ctx->iep_ctx, IEP_CMD_SET_DEI_CFG, &params);
+
+    memset(&params, 0, sizeof(params));
+    params.ptype = IEP2_PARAM_TYPE_COM;
+    params.param.com.sfmt = IEP2_FMT_YUV420;
+    params.param.com.dfmt = IEP2_FMT_YUV420;
+    params.param.com.sswap = IEP2_YUV_SWAP_SP_UV;
+    params.param.com.dswap = IEP2_YUV_SWAP_SP_UV;
+    params.param.com.width = img.act_w;
+    params.param.com.height = img.act_h;
+    params.param.com.hor_stride = img.vir_w;//img.act_w;
+    ops->control(ctx->iep_ctx, IEP_CMD_SET_DEI_CFG, &params);
+
+    return MPP_OK;
+}
+
+MPP_RET dec_vproc_output_dei_v2(MppDecVprocCtxImpl *ctx, MppFrame frm, RK_U32 is_frm)
+{
+    MPP_RET ret = MPP_OK;
+    Mpp *mpp = ctx->mpp;
+    RK_U32 hor_stride = mpp_frame_get_hor_stride(frm);
+    RK_U32 ver_stride = mpp_frame_get_ver_stride(frm);
+    RK_U32 mode = mpp_frame_get_mode(frm);
+    RK_U32 dei_mode = mode & MPP_FRAME_FLAG_IEP_DEI_MASK;
+    MppBuffer dst0 = ctx->out_buf0;
+    MppBuffer dst1 = ctx->out_buf1;
+    RK_U32 frame_err = 0;
+
+    vproc_dbg_status("is_frm %d frm %p, dei_mode %d field0 %p field1 %p",
+                     is_frm, ctx->prev_frm1, dei_mode, dst0, dst1);
+    if (is_frm) {
+        if (ctx->prev_frm1) {
+            vproc_dbg_out("output frame prev1 poc %d\n", mpp_frame_get_poc(ctx->prev_frm1));
+            dec_vproc_put_frame(mpp,  ctx->prev_frm1, NULL, -1, 0);
+            if (ctx->prev_idx1 >= 0)
+                mpp_buf_slot_clr_flag(ctx->slots, ctx->prev_idx1, SLOT_QUEUE_USE);
+            ctx->prev_idx1 = -1;
+            ctx->prev_frm1 = NULL;
+        }
+        return ret;
+    }
+
+    switch (dei_mode) {
+    case MPP_FRAME_FLAG_IEP_DEI_I4O2: {
+        RK_S64 prev_pts = mpp_frame_get_pts(ctx->prev_frm1);
+        RK_S64 curr_pts = mpp_frame_get_pts(ctx->prev_frm0);
+        RK_S64 first_pts = (prev_pts + curr_pts) / 2;
+
+        frame_err |= mpp_frame_get_errinfo(ctx->prev_frm0) + mpp_frame_get_discard(ctx->prev_frm0);
+        frame_err |= mpp_frame_get_errinfo(ctx->prev_frm1) + mpp_frame_get_discard(ctx->prev_frm1);
+
+        if (ctx->pd_mode) {
+            // NOTE: we need to process pts here if PD mode
+            if (ctx->dei_info.pd_flag != PD_COMP_FLAG_NON &&
+                ctx->dei_info.pd_types != PD_TYPES_UNKNOWN) {
+                vproc_dbg_out("output at pd mode, frame poc %d\n", mpp_frame_get_poc(frm));
+                dec_vproc_put_frame(mpp, frm, dst0, first_pts, frame_err);
+                if (vproc_debug & VPROC_DBG_DUMP_OUT)
+                    dump_mppbuffer(dst0, "/data/dump/dump_output.yuv", hor_stride, ver_stride);
+                ctx->out_buf0 = NULL;
+            }
+        } else {
+            RK_U32 fo_from_syntax = (mode & MPP_FRAME_FLAG_TOP_FIRST) ? 1 : 0;
+            RK_U32 fo_from_iep = (ctx->dei_info.dil_order == IEP2_FIELD_ORDER_UND) ?
+                                 fo_from_syntax : (ctx->dei_info.dil_order == IEP2_FIELD_ORDER_TFF);
+            RK_U32 is_tff = 0;
+
+            if (fo_from_iep != fo_from_syntax) {
+                if (ctx->dei_info.dil_order_confidence_ratio > 30)
+                    is_tff = fo_from_iep;
+                else
+                    is_tff = fo_from_syntax;
+            } else {
+                is_tff = fo_from_syntax;
+            }
+
+            vproc_dbg_status("Output field order: is TFF %d, syn %d vs iep %d\n",
+                             is_tff, fo_from_syntax, fo_from_iep);
+
+            if (is_tff) {
+                vproc_dbg_out("output at I4O2 for tff, frame poc %d\n", mpp_frame_get_poc(frm));
+                dec_vproc_put_frame(mpp, frm, dst0, first_pts, frame_err);
+                if (vproc_debug & VPROC_DBG_DUMP_OUT)
+                    dump_mppbuffer(dst0, "/data/dump/dump_output.yuv", hor_stride, ver_stride);
+                vproc_dbg_out("output at I4O2 for bff, frame poc %d\n", mpp_frame_get_poc(frm));
+                dec_vproc_put_frame(mpp, frm, dst1, curr_pts, frame_err);
+                if (vproc_debug & VPROC_DBG_DUMP_OUT)
+                    dump_mppbuffer(dst1, "/data/dump/dump_output.yuv", hor_stride, ver_stride);
+            } else {
+                vproc_dbg_out("output at I4O2 for bff, frame poc %d\n", mpp_frame_get_poc(frm));
+                dec_vproc_put_frame(mpp, frm, dst1, first_pts, frame_err);
+                if (vproc_debug & VPROC_DBG_DUMP_OUT)
+                    dump_mppbuffer(dst1, "/data/dump/dump_output.yuv", hor_stride, mpp_frame_get_height(frm));
+                vproc_dbg_out("output at I4O2 for tff, frame poc %d\n", mpp_frame_get_poc(frm));
+                dec_vproc_put_frame(mpp, frm, dst0, curr_pts, frame_err);
+                if (vproc_debug & VPROC_DBG_DUMP_OUT)
+                    dump_mppbuffer(dst0, "/data/dump/dump_output.yuv", hor_stride, mpp_frame_get_height(frm));
+            }
+
+            ctx->out_buf0 = NULL;
+            ctx->out_buf1 = NULL;
+        }
+    } break;
+    case MPP_FRAME_FLAG_IEP_DEI_I2O1:
+    case MPP_FRAME_FLAG_IEP_DEI_I4O1: {
+        vproc_dbg_out("output at I2O1, frame poc %d\n", mpp_frame_get_poc(frm));
+        dec_vproc_put_frame(mpp, frm, dst0, -1, frame_err);
+        if (vproc_debug & VPROC_DBG_DUMP_OUT)
+            dump_mppbuffer(dst0, "/data/dump/dump_output.yuv", hor_stride, mpp_frame_get_height(frm));
+        ctx->out_buf0 = NULL;
+    }
+    default:
+        break;
+    }
+
+    return ret;
+}
+
+static MPP_RET dec_vproc_dei_v2_deinterlace(MppDecVprocCtxImpl *ctx, MppFrame frm)
+{
+    MPP_RET ret = MPP_OK;
+    RK_U32 mode = mpp_frame_get_mode(frm);
+    enum IEP2_DIL_MODE dil_mode = IEP2_DIL_MODE_DISABLE;
+
+    /* refer to syntax */
+    if (((mode & MPP_FRAME_FLAG_PAIRED_FIELD) == MPP_FRAME_FLAG_FRAME) &&
+        !(mode & MPP_FRAME_FLAG_FIELD_ORDER_MASK))
+        return dec_vproc_output_dei_v2(ctx, frm, 1);
+
+    if (ctx->prev_frm1 && ctx->prev_frm0) {
+        // 5 in 2 out case
+        vproc_dbg_status("5 field in and 2 frame out\n");
+
+        if (!ctx->pd_mode)
+            dil_mode = IEP2_DIL_MODE_I5O2;
+        else
+            dil_mode = IEP2_DIL_MODE_PD;
+
+        dec_vproc_config_dei_v2(ctx, frm, dil_mode);
+
+        mode = mode | MPP_FRAME_FLAG_IEP_DEI_I4O2;
+        mpp_frame_set_mode(frm, mode);
+        // start hardware
+        ctx->start_dei((MppDecVprocCtx *)ctx, mode);
+
+        dec_vproc_output_dei_v2(ctx, frm, 0);
+
+        if (ctx->dei_info.pd_types == PD_TYPES_UNKNOWN)
+            ctx->pd_mode = 0;
+        else
+            ctx->pd_mode = 1;
+
+    } else if (ctx->prev_frm0 && ! ctx->prev_frm1) {
+        vproc_dbg_status("Wait for next frame to turn into I5O2");
+
+        if (ctx->out_buf0) {
+            mpp_buffer_put(ctx->out_buf0);
+            ctx->out_buf0 = NULL;
+        }
+
+        if (ctx->out_buf1) {
+            mpp_buffer_put(ctx->out_buf1);
+            ctx->out_buf1 = NULL;
+        }
+    } else {
+        // 2 in 1 out case
+        vproc_dbg_status("2 field in and 1 frame out\n");
+        dil_mode = IEP2_DIL_MODE_I1O1T;
+
+        dec_vproc_config_dei_v2(ctx, frm, dil_mode);
+
+        mode = mode | MPP_FRAME_FLAG_IEP_DEI_I2O1;
+        mpp_frame_set_mode(frm, mode);
+        // start hardware
+        ctx->start_dei((MppDecVprocCtx *)ctx, mode);
+
+        dec_vproc_output_dei_v2(ctx, frm, 0);
+    }
+
+    return ret;
+}
+
+static MPP_RET dec_vproc_dei_v2_detection(MppDecVprocCtxImpl *ctx, MppFrame frm)
+{
+    MPP_RET ret = MPP_OK;
+    RK_U32 mode = mpp_frame_get_mode(frm);
+    enum IEP2_DIL_MODE dil_mode = IEP2_DIL_MODE_DISABLE;
+    RK_U32 is_frame = 0;
+
+    if (ctx->pre_ff_mode == IEP2_FF_MODE_UND) {
+        if (((mode & MPP_FRAME_FLAG_PAIRED_FIELD) == MPP_FRAME_FLAG_FRAME) &&
+            !(mode & MPP_FRAME_FLAG_FIELD_ORDER_MASK))
+            is_frame = 1;
+        else
+            is_frame = 0;
+    } else {
+        is_frame = ctx->pre_ff_mode == IEP2_FF_MODE_FRAME ? 1 : 0;
+    }
+
+    /* TODO: diff detection strategy */
+    if (ctx->prev_frm1 && ctx->prev_frm0) {
+        // 5 in 2 out case
+        vproc_dbg_status("5 field in and 2 frame out\n");
+
+        if (!ctx->pd_mode)
+            dil_mode = IEP2_DIL_MODE_I5O2;
+        else
+            dil_mode = IEP2_DIL_MODE_PD;
+
+        dec_vproc_config_dei_v2(ctx, frm, dil_mode);
 
         // start hardware
-        dec_vproc_start_dei(ctx, mode);
+        ctx->start_dei((MppDecVprocCtx *)ctx, mode);
 
-        // NOTE: we need to process pts here
-        if (!ctx->detection) {
-            if (ctx->pd_mode) {
-                if (ctx->dei_info.pd_flag != PD_COMP_FLAG_NON && ctx->dei_info.pd_types != PD_TYPES_UNKNOWN) {
-                    dec_vproc_put_frame(mpp, frm, dst0, first_pts, frame_err);
-                    if (vproc_debug & VPROC_DBG_DUMP_OUT)
-                        dump_mppbuffer(dst0, "/data/dump/dump_output.yuv", hor_stride, ver_stride);
-                    ctx->out_buf0 = NULL;
-                }
-            } else {
-                RK_U32 fo_from_syntax = (mode & MPP_FRAME_FLAG_TOP_FIRST) ? 1 : 0;
-                RK_U32 fo_from_iep = (ctx->dei_info.dil_order == IEP2_FIELD_ORDER_TFF);
-                RK_U32 is_tff = 0;
-
-                if (fo_from_iep != fo_from_syntax) {
-                    if (ctx->dei_info.dil_order_confidence_ratio > 30)
-                        is_tff = fo_from_iep;
-                    else
-                        is_tff = fo_from_iep;
-                } else {
-                    is_tff = fo_from_syntax;
-                }
-
-                if (is_tff) {
-                    dec_vproc_put_frame(mpp, frm, dst0, first_pts, frame_err);
-                    if (vproc_debug & VPROC_DBG_DUMP_OUT)
-                        dump_mppbuffer(dst0, "/data/dump/dump_output.yuv", hor_stride, ver_stride);
-                    dec_vproc_put_frame(mpp, frm, dst1, curr_pts, frame_err);
-                    if (vproc_debug & VPROC_DBG_DUMP_OUT)
-                        dump_mppbuffer(dst1, "/data/dump/dump_output.yuv", hor_stride, ver_stride);
-                } else {
-                    dec_vproc_put_frame(mpp, frm, dst1, first_pts, frame_err);
-                    if (vproc_debug & VPROC_DBG_DUMP_OUT)
-                        dump_mppbuffer(dst1, "/data/dump/dump_output.yuv", hor_stride, mpp_frame_get_height(frm));
-                    dec_vproc_put_frame(mpp, frm, dst0, curr_pts, frame_err);
-                    if (vproc_debug & VPROC_DBG_DUMP_OUT)
-                        dump_mppbuffer(dst0, "/data/dump/dump_output.yuv", hor_stride, mpp_frame_get_height(frm));
-                }
-                ctx->out_buf0 = NULL;
-                ctx->out_buf1 = NULL;
-            }
-        }
-
-        if (ctx->dei_info.frm_mode) {
-            ctx->detection = 1;
+        if (ctx->dei_info.frm_mode == IEP2_FF_MODE_FRAME) {
+            is_frame = 1;
         } else if (ctx->dei_info.pd_types == PD_TYPES_UNKNOWN) {
             ctx->pd_mode = 0;
-            ctx->detection = 0;
+            is_frame = 0;
         } else {
             ctx->pd_mode = 1;
-            ctx->detection = 0;
+            is_frame = 0;
+        }
+
+        if (!is_frame) {
+            mode = mode | MPP_FRAME_FLAG_IEP_DEI_I4O2;
+            mpp_frame_set_mode(frm, mode);
         }
     } else if (ctx->prev_frm0 && ! ctx->prev_frm1) {
         vproc_dbg_status("Wait for next frame to turn into I5O2");
@@ -510,87 +741,89 @@ static void dec_vproc_set_dei_v2(MppDecVprocCtxImpl *ctx, MppFrame frm)
             ctx->out_buf1 = NULL;
         }
     } else {
-        struct iep2_api_params params;
-
         // 2 in 1 out case
         vproc_dbg_status("2 field in and 1 frame out\n");
-        buf = mpp_frame_get_buffer(frm);
-        fd = mpp_buffer_get_fd(buf);
-        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_SRC);
-        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_SRC1);
-        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_SRC2);
+        dil_mode = IEP2_DIL_MODE_I1O1T;
 
-        frame_err = mpp_frame_get_errinfo(frm) ||
-                    mpp_frame_get_discard(frm);
-
-        // setup dst 0
-        fd = mpp_buffer_get_fd(dst0);
-        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DST);
-        dec_vproc_set_img(ctx, &img, fd, IEP_CMD_SET_DEI_DST1);
-
-        params.ptype = IEP2_PARAM_TYPE_MODE;
-        params.param.mode.dil_mode = IEP2_DIL_MODE_I1O1T;
-        params.param.mode.out_mode = IEP2_OUT_MODE_LINE;
-        ops->control(ctx->iep_ctx, IEP_CMD_SET_DEI_CFG, &params);
-
-        params.ptype = IEP2_PARAM_TYPE_COM;
-        params.param.com.sfmt = IEP2_FMT_YUV420;
-        params.param.com.dfmt = IEP2_FMT_YUV420;
-        params.param.com.sswap = IEP2_YUV_SWAP_SP_UV;
-        params.param.com.dswap = IEP2_YUV_SWAP_SP_UV;
-        params.param.com.width = hor_stride;
-        params.param.com.height = ver_stride;
-        params.param.com.hor_stride = hor_stride;//img.act_w;
-        ops->control(ctx->iep_ctx, IEP_CMD_SET_DEI_CFG, &params);
+        dec_vproc_config_dei_v2(ctx, frm, dil_mode);
 
         mode = mode | MPP_FRAME_FLAG_IEP_DEI_I2O1;
         mpp_frame_set_mode(frm, mode);
         // start hardware
-        dec_vproc_start_dei(ctx, mode);
-        if (!ctx->detection) {
-            dec_vproc_put_frame(mpp, frm, dst0, -1, frame_err);
-            if (vproc_debug & VPROC_DBG_DUMP_OUT)
-                dump_mppbuffer(dst0, "/data/dump/dump_output.yuv", hor_stride, mpp_frame_get_height(frm));
-            ctx->out_buf0 = NULL;
-        }
+        ctx->start_dei((MppDecVprocCtx *)ctx, mode);
     }
+
+    ret = dec_vproc_output_dei_v2(ctx, frm, is_frame);
+    ctx->pre_ff_mode = ctx->dei_info.frm_mode;
+
+    return ret;
 }
 
-static void dec_vproc_update_ref(MppDecVprocCtxImpl *ctx, MppFrame frm, RK_U32 index, RK_U32 eos)
+static MPP_RET dec_vproc_set_dei_v2(MppDecVprocCtx *vproc_ctx, MppFrame frm)
 {
+    MPP_RET ret = MPP_OK;
+    MppDecVprocCtxImpl *ctx = (MppDecVprocCtxImpl *)vproc_ctx;
+    /*     RK_U32 mode = mpp_frame_get_mode(frm);
+        enum IEP2_DIL_MODE dil_mode = IEP2_DIL_MODE_DISABLE; */
+    MppVprocMode vproc_mode = ctx->vproc_mode;
+
+    switch (vproc_mode) {
+    case MPP_VPROC_MODE_DETECTION: {
+        dec_vproc_dei_v2_detection(ctx, frm);
+    } break;
+    case MPP_VPROC_MODE_DEINTELACE: {
+        dec_vproc_dei_v2_deinterlace(ctx, frm);
+    } break;
+    default: {
+        mpp_err("warning: vproc mode unknown!\n");
+        ret = MPP_NOK;
+    } break;
+    }
+
+    return ret;
+}
+
+MPP_RET dec_vproc_update_ref_v1(MppDecVprocCtx *vproc_ctx, MppFrame frm, RK_U32 index)
+{
+    MPP_RET ret = MPP_OK;
+    MppDecVprocCtxImpl *ctx = (MppDecVprocCtxImpl *)vproc_ctx;
+    dec_vproc_clr_prev0(ctx);
+    ctx->prev_idx0 = index;
+    ctx->prev_frm0 = frm;
+
+    return ret;
+}
+
+MPP_RET dec_vproc_update_ref_v2(MppDecVprocCtx *vproc_ctx, MppFrame frm, RK_U32 index)
+{
+    MPP_RET ret = MPP_OK;
+    MppDecVprocCtxImpl *ctx = (MppDecVprocCtxImpl *)vproc_ctx;
+
+    dec_vproc_clr_prev1(ctx);
+
+    ctx->prev_idx1 = ctx->prev_idx0;
+    ctx->prev_idx0 = index;
+    ctx->prev_frm1 = ctx->prev_frm0;
+    ctx->prev_frm0 = frm;
+    return ret;
+}
+
+static MPP_RET dec_vproc_update_ref(MppDecVprocCtxImpl *ctx, MppFrame frm, RK_U32 index, RK_U32 eos)
+{
+    MPP_RET ret = MPP_OK;
     Mpp *mpp = ctx->mpp;
 
-    if (ctx->com_ctx->ver == 1) {
-        dec_vproc_clr_prev0(ctx);
-        ctx->prev_idx0 = index;
-        ctx->prev_frm0 = frm;
-    } else {
-        if (ctx->detection) {
-            if (ctx->prev_frm1) {
-                dec_vproc_put_frame(mpp,  ctx->prev_frm1, NULL, -1, 0);
-                if (ctx->prev_idx1 >= 0)
-                    mpp_buf_slot_clr_flag(ctx->slots, ctx->prev_idx1, SLOT_QUEUE_USE);
-                ctx->prev_idx1 = -1;
-                ctx->prev_frm1 = NULL;
-            }
-        } else {
-            dec_vproc_clr_prev1(ctx);
-        }
-
-        ctx->prev_idx1 = ctx->prev_idx0;
-        ctx->prev_idx0 = index;
-        ctx->prev_frm1 = ctx->prev_frm0;
-        ctx->prev_frm0 = frm;
-    }
+    ret = ctx->update_ref((MppDecVprocCtx *)ctx, frm, index);
 
     if (eos) {
         mpp_frame_init(&frm);
         mpp_frame_set_eos(frm, eos);
+        vproc_dbg_out("output at update ref, frame poc %d\n", mpp_frame_get_poc(frm));
         dec_vproc_put_frame(mpp, frm, NULL, -1, 0);
         dec_vproc_clr_prev(ctx);
         mpp_frame_deinit(&frm);
     }
-    return;
+    return ret;
 }
 
 static void *dec_vproc_thread(void *data)
@@ -611,17 +844,17 @@ static void *dec_vproc_thread(void *data)
     while (1) {
         MPP_RET ret = MPP_OK;
 
-        {
-            AutoMutex autolock(thd->mutex());
-
-            if (MPP_THREAD_RUNNING != thd->get_status())
-                break;
-
-            if (ctx->task_wait.val && !ctx->reset) {
-                vproc_dbg_status("vproc thread wait %d", ctx->task_wait.val);
-                thd->wait();
-            }
+        mpp_thread_lock(thd, THREAD_WORK);
+        if (MPP_THREAD_RUNNING != mpp_thread_get_status(thd, THREAD_WORK)) {
+            mpp_thread_unlock(thd, THREAD_WORK);
+            break;
         }
+
+        if (ctx->task_wait.val && !ctx->reset) {
+            vproc_dbg_status("vproc thread wait %d", ctx->task_wait.val);
+            mpp_thread_wait(thd, THREAD_WORK);
+        }
+        mpp_thread_unlock(thd, THREAD_WORK);
 
         if (!ctx->task_status.task_rdy) {
             if (hal_task_get_hnd(tasks, TASK_PROCESSING, &task)) {
@@ -631,9 +864,9 @@ static void *dec_vproc_thread(void *data)
 
                     dec_vproc_clr_prev(ctx);
 
-                    thd->lock(THREAD_CONTROL);
+                    mpp_thread_lock(thd, THREAD_CONTROL);
                     ctx->reset = 0;
-                    thd->unlock(THREAD_CONTROL);
+                    mpp_thread_unlock(thd, THREAD_CONTROL);
                     sem_post(&ctx->reset_sem);
                     ctx->task_wait.val = 0;
 
@@ -663,6 +896,7 @@ static void *dec_vproc_thread(void *data)
 
                 mpp_frame_init(&frm);
                 mpp_frame_set_eos(frm, eos);
+                vproc_dbg_out("output at eos, frame poc %d\n", mpp_frame_get_poc(frm));
                 dec_vproc_put_frame(mpp, frm, NULL, -1, 0);
                 dec_vproc_clr_prev(ctx);
                 mpp_frame_deinit(&frm);
@@ -676,8 +910,12 @@ static void *dec_vproc_thread(void *data)
 
             if (change) {
                 vproc_dbg_status("info change\n");
+                vproc_dbg_out("output at info change, frame poc %d\n", mpp_frame_get_poc(frm));
                 dec_vproc_put_frame(mpp, frm, NULL, -1, 0);
                 dec_vproc_clr_prev(ctx);
+
+                if (ctx->com_ctx->ops->reset)
+                    ctx->com_ctx->ops->reset(ctx->iep_ctx);
 
                 hal_task_hnd_set_status(task, TASK_IDLE);
                 ctx->task_status.task_rdy = 0;
@@ -689,6 +927,7 @@ static void *dec_vproc_thread(void *data)
                 size_t buf_size = mpp_buffer_get_size(buf);
                 if (!ctx->out_buf0) {
                     mpp_buffer_get(mpp->mFrameGroup, &ctx->out_buf0, buf_size);
+                    vproc_dbg_out("get out buf0 ptr %p\n", mpp_buffer_get_ptr(ctx->out_buf0));
                     if (NULL == ctx->out_buf0) {
                         ctx->task_wait.task_buf_in = 1;
                         continue;
@@ -696,6 +935,7 @@ static void *dec_vproc_thread(void *data)
                 }
                 if (!ctx->out_buf1) {
                     mpp_buffer_get(mpp->mFrameGroup, &ctx->out_buf1, buf_size);
+                    vproc_dbg_out("get out buf1 ptr %p\n", mpp_buffer_get_ptr(ctx->out_buf1));
                     if (NULL == ctx->out_buf1) {
                         ctx->task_wait.task_buf_in = 1;
                         continue;
@@ -710,12 +950,12 @@ static void *dec_vproc_thread(void *data)
 
             vproc_dbg_status("vproc get buf ready & start process ");
             if (!ctx->reset && ctx->iep_ctx) {
-                if (ctx->com_ctx->ver == 1) {
-                    dec_vproc_set_dei_v1(ctx, frm);
-                } else {
-                    dec_vproc_set_dei_v2(ctx, frm);
-                }
+                vproc_dbg_in("processing frame poc %d, mode 0x%x, err %x vs %x, buf slot %x, ptr %p\n",
+                             mpp_frame_get_poc(frm), mpp_frame_get_mode(frm), mpp_frame_get_errinfo(frm),
+                             mpp_frame_get_discard(frm), index, mpp_buffer_get_ptr(mpp_frame_get_buffer(frm)));
+                ctx->set_dei((MppDecVprocCtx *)ctx, frm);
             }
+
             dec_vproc_update_ref(ctx, frm, index, eos);
             hal_task_hnd_set_status(task, TASK_IDLE);
             ctx->task_status.val = 0;
@@ -748,24 +988,24 @@ MPP_RET dec_vproc_init(MppDecVprocCtx *ctx, MppDecVprocCfg *cfg)
         return MPP_ERR_MALLOC;
     }
 
+    p->pre_ff_mode = IEP2_FF_MODE_UND;
     p->mpp = (Mpp *)cfg->mpp;
     p->slots = ((MppDecImpl *)p->mpp->mDec)->frame_slots;
-    p->thd = new MppThread(dec_vproc_thread, p, "mpp_dec_vproc");
+    p->thd = mpp_thread_create(dec_vproc_thread, p, "mpp_dec_vproc");
     sem_init(&p->reset_sem, 0, 0);
     ret = hal_task_group_init(&p->task_group, TASK_BUTT, 4, sizeof(HalDecVprocTask));
     if (ret) {
         mpp_err_f("create task group failed\n");
-        delete p->thd;
+        mpp_thread_destroy(p->thd);
         MPP_FREE(p);
         return MPP_ERR_MALLOC;
     }
     cfg->task_group = p->task_group;
 
-    /// TODO, seperate iep1/2 api
     p->com_ctx = get_iep_ctx();
     if (!p->com_ctx) {
         mpp_err("failed to require context\n");
-        delete p->thd;
+        mpp_thread_destroy(p->thd);
 
         if (p->task_group) {
             hal_task_group_deinit(p->task_group);
@@ -777,12 +1017,22 @@ MPP_RET dec_vproc_init(MppDecVprocCtx *ctx, MppDecVprocCfg *cfg)
         return MPP_ERR_MALLOC;
     }
 
+    if (p->com_ctx->ver == 1) {
+        p->start_dei = dec_vproc_start_dei_v1;
+        p->set_dei = dec_vproc_set_dei_v1;
+        p->update_ref = dec_vproc_update_ref_v1;
+    } else {
+        p->start_dei = dec_vproc_start_dei_v2;
+        p->set_dei = dec_vproc_set_dei_v2;
+        p->update_ref = dec_vproc_update_ref_v2;
+    }
+
     ret = p->com_ctx->ops->init(&p->com_ctx->priv);
     p->iep_ctx = p->com_ctx->priv;
     if (!p->thd || ret) {
         mpp_err("failed to create context\n");
         if (p->thd) {
-            delete p->thd;
+            mpp_thread_destroy(p->thd);
             p->thd = NULL;
         }
 
@@ -834,16 +1084,16 @@ RK_U32 dec_vproc_get_version(MppDecVprocCtx ctx)
     return p->com_ctx->ver;
 }
 
-void dec_vproc_enable_detect(MppDecVprocCtx ctx)
+MPP_RET dec_vproc_set_mode(MppDecVprocCtx ctx, MppVprocMode mode)
 {
     if (NULL == ctx) {
         mpp_err_f("found NULL input\n");
-        return;
+        return MPP_ERR_NULL_PTR;
     }
 
     MppDecVprocCtxImpl *p = (MppDecVprocCtxImpl *)ctx;
-    p->detection = 1;
-    return;
+    p->vproc_mode = mode;
+    return MPP_OK;
 }
 
 MPP_RET dec_vproc_deinit(MppDecVprocCtx ctx)
@@ -856,8 +1106,7 @@ MPP_RET dec_vproc_deinit(MppDecVprocCtx ctx)
 
     MppDecVprocCtxImpl *p = (MppDecVprocCtxImpl *)ctx;
     if (p->thd) {
-        p->thd->stop();
-        delete p->thd;
+        mpp_thread_destroy(p->thd);
         p->thd = NULL;
     }
 
@@ -892,7 +1141,7 @@ MPP_RET dec_vproc_start(MppDecVprocCtx ctx)
     MppDecVprocCtxImpl *p = (MppDecVprocCtxImpl *)ctx;
 
     if (p->thd)
-        p->thd->start();
+        mpp_thread_start(p->thd);
     else
         mpp_err("failed to start dec vproc thread\n");
 
@@ -911,7 +1160,7 @@ MPP_RET dec_vproc_stop(MppDecVprocCtx ctx)
     MppDecVprocCtxImpl *p = (MppDecVprocCtxImpl *)ctx;
 
     if (p->thd)
-        p->thd->stop();
+        mpp_thread_stop(p->thd);
     else
         mpp_err("failed to stop dec vproc thread\n");
 
@@ -929,9 +1178,9 @@ MPP_RET dec_vproc_signal(MppDecVprocCtx ctx)
 
     MppDecVprocCtxImpl *p = (MppDecVprocCtxImpl *)ctx;
     if (p->thd) {
-        p->thd->lock();
-        p->thd->signal();
-        p->thd->unlock();
+        mpp_thread_lock(p->thd, THREAD_WORK);
+        mpp_thread_signal(p->thd, THREAD_WORK);
+        mpp_thread_unlock(p->thd, THREAD_WORK);
     }
 
     vproc_dbg_func("out\n");
@@ -952,12 +1201,12 @@ MPP_RET dec_vproc_reset(MppDecVprocCtx ctx)
 
         vproc_dbg_reset("reset contorl start\n");
         // wait reset finished
-        thd->lock();
-        thd->lock(THREAD_CONTROL);
+        mpp_thread_lock(thd, THREAD_WORK);
+        mpp_thread_lock(thd, THREAD_CONTROL);
         p->reset = 1;
-        thd->signal();
-        thd->unlock(THREAD_CONTROL);
-        thd->unlock();
+        mpp_thread_signal(thd, THREAD_WORK);
+        mpp_thread_unlock(thd, THREAD_CONTROL);
+        mpp_thread_unlock(thd, THREAD_WORK);
 
         vproc_dbg_reset("reset contorl wait\n");
         sem_wait(&p->reset_sem);

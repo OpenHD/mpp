@@ -53,7 +53,7 @@
 #define VPU_OUTPUT_FORMAT_DYNCRANGE_SDR             (0x00000000)
 #define VPU_OUTPUT_FORMAT_DYNCRANGE_HDR10           (0x01000000)
 #define VPU_OUTPUT_FORMAT_DYNCRANGE_HDR_HLG         (0x02000000)
-#define VPU_OUTPUT_FORMAT_DYNCRANGE_HDR_DOLBY       (0x03000000)
+#define VPU_OUTPUT_FORMAT_DYNCRANGE_HDR_DLBY        (0x03000000)
 
 /**
  * @brief input picture type
@@ -94,6 +94,7 @@ typedef enum VPU_API_CMD {
     VPU_API_SET_OUTPUT_BLOCK,
     VPU_API_GET_EOS_STATUS,
     VPU_API_SET_OUTPUT_MODE,
+    VPU_API_SET_FRAME_INFO,
 
     /* get sps/pps header */
     VPU_API_GET_EXTRA_INFO = 0x200,
@@ -107,6 +108,7 @@ typedef enum VPU_API_CMD {
     VPU_API_DEC_EN_FBC_HDR_256_ODD,
     VPU_API_SET_INPUT_BLOCK,
     VPU_API_SET_DISABLE_ERROR,
+    VPU_API_SET_DIS_ERR_CLR_MARK,
 
     /* set pkt/frm ready callback */
     VPU_API_SET_PKT_RDY_CB = 0x1100,

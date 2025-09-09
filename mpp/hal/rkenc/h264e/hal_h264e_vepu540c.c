@@ -32,7 +32,6 @@
 #include "hal_h264e_debug.h"
 #include "hal_bufs.h"
 #include "mpp_enc_hal.h"
-#include "vepu541_common.h"
 #include "vepu5xx_common.h"
 #include "vepu540c_common.h"
 
@@ -456,7 +455,7 @@ static MPP_RET setup_vepu540c_prep(HalVepu540cRegSet *regs, MppEncPrepCfg *prep)
 {
     VepuFmtCfg cfg;
     MppFrameFormat fmt = prep->format;
-    MPP_RET ret = vepu541_set_fmt(&cfg, fmt);
+    MPP_RET ret = vepu5xx_set_fmt(&cfg, fmt);
     RK_U32 hw_fmt = cfg.format;
     RK_S32 y_stride;
     RK_S32 c_stride;
@@ -482,10 +481,10 @@ static MPP_RET setup_vepu540c_prep(HalVepu540cRegSet *regs, MppEncPrepCfg *prep)
     y_stride = (MPP_FRAME_FMT_IS_FBC(fmt)) ? (MPP_ALIGN(prep->width, 16)) :
                (prep->hor_stride) ? (prep->hor_stride) : (prep->width);
 
-    c_stride = (hw_fmt == VEPU541_FMT_YUV422SP || hw_fmt == VEPU541_FMT_YUV420SP) ?
+    c_stride = (hw_fmt == VEPU5xx_FMT_YUV422SP || hw_fmt == VEPU5xx_FMT_YUV420SP) ?
                y_stride : y_stride / 2;
 
-    if (hw_fmt < VEPU541_FMT_NONE) {
+    if (hw_fmt < VEPU5xx_FMT_ARGB1555) {
         const VepuRgb2YuvCfg *cfg_coeffs = get_rgb2yuv_cfg(prep->range, prep->color);
 
         hal_h264e_dbg_flow("input color range %d colorspace %d", prep->range, prep->color);
@@ -1020,34 +1019,33 @@ static void setup_vepu540c_io_buf(HalVepu540cRegSet *regs, MppDev dev,
     } else if (MPP_FRAME_FMT_IS_YUV(fmt)) {
         VepuFmtCfg cfg;
 
-        vepu541_set_fmt(&cfg, fmt);
+        vepu5xx_set_fmt(&cfg, fmt);
         switch (cfg.format) {
-        case VEPU541_FMT_BGRA8888 :
-        case VEPU541_FMT_BGR888 :
-        case VEPU541_FMT_BGR565 : {
+        case VEPU5xx_FMT_BGRA8888 :
+        case VEPU5xx_FMT_BGR888 :
+        case VEPU5xx_FMT_BGR565 : {
             off_in[0] = 0;
             off_in[1] = 0;
         } break;
-        case VEPU541_FMT_YUV420SP :
-        case VEPU541_FMT_YUV422SP : {
+        case VEPU5xx_FMT_YUV420SP :
+        case VEPU5xx_FMT_YUV422SP : {
             off_in[0] = hor_stride * ver_stride;
             off_in[1] = hor_stride * ver_stride;
         } break;
-        case VEPU541_FMT_YUV422P : {
+        case VEPU5xx_FMT_YUV422P : {
             off_in[0] = hor_stride * ver_stride;
             off_in[1] = hor_stride * ver_stride * 3 / 2;
         } break;
-        case VEPU541_FMT_YUV420P : {
+        case VEPU5xx_FMT_YUV420P : {
             off_in[0] = hor_stride * ver_stride;
             off_in[1] = hor_stride * ver_stride * 5 / 4;
         } break;
-        case VEPU540_FMT_YUV400 :
-        case VEPU541_FMT_YUYV422 :
-        case VEPU541_FMT_UYVY422 : {
+        case VEPU5xx_FMT_YUV400 :
+        case VEPU5xx_FMT_YUYV422 :
+        case VEPU5xx_FMT_UYVY422 : {
             off_in[0] = 0;
             off_in[1] = 0;
         } break;
-        case VEPU541_FMT_NONE :
         default : {
             off_in[0] = 0;
             off_in[1] = 0;
@@ -1429,20 +1427,15 @@ static void setup_vepu540c_l2(HalVepu540cRegSet *regs, H264eSlice *slice, MppEnc
         regs->reg_rc_roi.madp_st_thd1.madp_th2 = 15 << 4;
     }
 
-    {
-        RK_U8* thd = (RK_U8*)&regs->reg_rc_roi.aq_tthd0;
-        RK_U8* step = (RK_U8*)&regs->reg_rc_roi.aq_stp0;
-
-        if (slice->slice_type == H264_I_SLICE) {
-            for (i = 0; i < MPP_ARRAY_ELEMS(h264_aq_tthd_default); i++) {
-                thd[i] = hw->aq_thrd_i[i];
-                step[i] = hw->aq_step_i[i] & 0x3f;
-            }
-        } else {
-            for (i = 0; i < MPP_ARRAY_ELEMS(h264_P_aq_step_default); i++) {
-                thd[i] = hw->aq_thrd_p[i];
-                step[i] = hw->aq_step_p[i] & 0x3f;
-            }
+    if (slice->slice_type == H264_I_SLICE) {
+        for (i = 0; i < MPP_ARRAY_ELEMS(h264_aq_tthd_default); i++) {
+            regs->reg_rc_roi.aq_tthd[i] = hw->aq_thrd_i[i];
+            regs->reg_rc_roi.aq_step[i] = hw->aq_step_i[i] & 0x3f;
+        }
+    } else {
+        for (i = 0; i < MPP_ARRAY_ELEMS(h264_P_aq_step_default); i++) {
+            regs->reg_rc_roi.aq_tthd[i] = hw->aq_thrd_p[i];
+            regs->reg_rc_roi.aq_step[i] = hw->aq_step_p[i] & 0x3f;
         }
     }
 

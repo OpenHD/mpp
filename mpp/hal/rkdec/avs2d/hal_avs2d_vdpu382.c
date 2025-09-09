@@ -680,7 +680,8 @@ MPP_RET hal_avs2d_vdpu382_gen_regs(void *hal, HalTaskInfo *task)
 
     INP_CHECK(ret, NULL == p_hal);
 
-    if (task->dec.flags.parse_err || task->dec.flags.ref_err) {
+    if ((task->dec.flags.parse_err || task->dec.flags.ref_err) &&
+        !p_hal->cfg->base.disable_error) {
         ret = MPP_NOK;
         goto __RETURN;
     }
@@ -724,19 +725,14 @@ MPP_RET hal_avs2d_vdpu382_gen_regs(void *hal, HalTaskInfo *task)
         memcpy(reg_ctx->bufs_ptr + reg_ctx->sclst_offset, reg_ctx->scalist_dat, sizeof(reg_ctx->scalist_dat));
         regs->common.reg012.scanlist_addr_valid_en = 1;
 
-        MppDevRegOffsetCfg trans_cfg;
-        trans_cfg.reg_idx = 161;
-        trans_cfg.offset = reg_ctx->shph_offset;
         regs->avs2d_addr.head_base = reg_ctx->bufs_fd;
-        mpp_dev_ioctl(p_hal->dev, MPP_DEV_REG_OFFSET, &trans_cfg);
+        mpp_dev_set_reg_offset(p_hal->dev, 161, reg_ctx->shph_offset);
 
         regs->avs2d_param.reg105.head_len = AVS2_RKV_SHPH_SIZE / 16;
         regs->avs2d_param.reg105.head_len -= (regs->avs2d_param.reg105.head_len > 0) ? 1 : 0;
 
-        trans_cfg.reg_idx = 180;
-        trans_cfg.offset = reg_ctx->sclst_offset;
         regs->avs2d_addr.scanlist_addr = reg_ctx->bufs_fd;
-        mpp_dev_ioctl(p_hal->dev, MPP_DEV_REG_OFFSET, &trans_cfg);
+        mpp_dev_set_reg_offset(p_hal->dev, 180, reg_ctx->sclst_offset);
     }
 
     if (avs2d_hal_debug & AVS2D_HAL_DBG_IN) {
@@ -877,7 +873,8 @@ MPP_RET hal_avs2d_vdpu382_start(void *hal, HalTaskInfo *task)
     AVS2D_HAL_TRACE("In.");
     INP_CHECK(ret, NULL == p_hal);
 
-    if (task->dec.flags.parse_err || task->dec.flags.ref_err) {
+    if ((task->dec.flags.parse_err || task->dec.flags.ref_err) &&
+        !p_hal->cfg->base.disable_error) {
         ret = MPP_NOK;
         goto __RETURN;
     }
@@ -1105,7 +1102,8 @@ MPP_RET hal_avs2d_vdpu382_wait(void *hal, HalTaskInfo *task)
     reg_ctx = (Avs2dVdpu382RegCtx_t *)p_hal->reg_ctx;
     p_regs = p_hal->fast_mode ? reg_ctx->reg_buf[task->dec.reg_index].regs : reg_ctx->regs;
 
-    if (task->dec.flags.parse_err || task->dec.flags.ref_err) {
+    if ((task->dec.flags.parse_err || task->dec.flags.ref_err) &&
+        !p_hal->cfg->base.disable_error) {
         AVS2D_HAL_DBG(AVS2D_HAL_DBG_ERROR, "found task error.\n");
         ret = MPP_NOK;
         goto __RETURN;

@@ -286,6 +286,8 @@ static RK_S32 decode_profile_tier_level(HEVCContext *s, PTLCommon *ptl)
         h265d_dbg(H265D_DBG_GLOBAL, "Main 10 profile bitstream\n");
     else if (ptl->profile_idc == MPP_PROFILE_HEVC_MAIN_STILL_PICTURE)
         h265d_dbg(H265D_DBG_GLOBAL, "Main Still Picture profile bitstream\n");
+    else if (ptl->profile_idc == MPP_PROFILE_HEVC_FORMAT_RANGE_EXTENDIONS)
+        h265d_dbg(H265D_DBG_GLOBAL, "Main 4:4:4 profile profile bitstream\n");
     else
         mpp_log("Unknown HEVC profile: %d\n", ptl->profile_idc);
 
@@ -1040,7 +1042,7 @@ int mpp_hevc_decode_nal_vps(HEVCContext *s)
     BitReadCtx_t *gb = &s->HEVClc->gb;
     RK_U32 vps_id = 0;
     HEVCVPS *vps = NULL;
-    RK_U8 *vps_buf = mpp_mem_pool_get(s->vps_pool);
+    RK_U8 *vps_buf = mpp_mem_pool_get_f(s->vps_pool);
     RK_S32 value = 0;
 
     if (!vps_buf)
@@ -1156,10 +1158,10 @@ int mpp_hevc_decode_nal_vps(HEVCContext *s)
 
     if (s->vps_list[vps_id] &&
         !memcmp(s->vps_list[vps_id], vps_buf, sizeof(HEVCVPS))) {
-        mpp_mem_pool_put(s->vps_pool, vps_buf);
+        mpp_mem_pool_put_f(s->vps_pool, vps_buf);
     } else {
         if (s->vps_list[vps_id] != NULL) {
-            mpp_mem_pool_put(s->vps_pool, s->vps_list[vps_id]);
+            mpp_mem_pool_put_f(s->vps_pool, s->vps_list[vps_id]);
         }
         s->vps_list[vps_id] = vps_buf;
         s->ps_need_upate = 1;
@@ -1168,7 +1170,7 @@ int mpp_hevc_decode_nal_vps(HEVCContext *s)
     return 0;
 __BITREAD_ERR:
 err:
-    mpp_mem_pool_put(s->vps_pool, vps_buf);
+    mpp_mem_pool_put_f(s->vps_pool, vps_buf);
     return  MPP_ERR_STREAM;
 }
 
@@ -1414,12 +1416,12 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
     RK_S32 ret    = 0;
     RK_U32 sps_id = 0;
     RK_S32 log2_diff_max_min_transform_block_size;
-    RK_S32 bit_depth_chroma, start, vui_present, sublayer_ordering_info;
+    RK_S32 bit_depth_chroma, start, vui_en, sublayer_ordering_info;
     RK_S32 i;
     RK_S32 value = 0;
 
     HEVCSPS *sps;
-    RK_U8 *sps_buf = mpp_mem_pool_get(s->sps_pool);
+    RK_U8 *sps_buf = mpp_mem_pool_get_f(s->sps_pool);
 
     if (!sps_buf)
         return MPP_ERR_NOMEM;
@@ -1511,29 +1513,37 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
     } break;
     case H265_CHROMA_420 : {
         switch (sps->bit_depth) {
-        case 8:  sps->pix_fmt = MPP_FMT_YUV420SP;   break;
+        case 8:  sps->pix_fmt = MPP_FMT_YUV420SP; break;
         case 10: sps->pix_fmt = MPP_FMT_YUV420SP_10BIT; break;
         default:
-            mpp_err( "Unsupported bit depth: %d\n",
-                     sps->bit_depth);
-            ret =  MPP_ERR_PROTOL;
+            mpp_err("Unsupported bit depth: %d\n",
+                    sps->bit_depth);
+            ret = MPP_ERR_PROTOL;
             goto err;
         }
     } break;
     case H265_CHROMA_422 : {
         switch (sps->bit_depth) {
-        case 8:  sps->pix_fmt = MPP_FMT_YUV422SP;   break;
+        case 8:  sps->pix_fmt = MPP_FMT_YUV422SP; break;
         case 10: sps->pix_fmt = MPP_FMT_YUV422SP_10BIT; break;
         default:
-            mpp_err( "Unsupported bit depth: %d\n",
-                     sps->bit_depth);
-            ret =  MPP_ERR_PROTOL;
+            mpp_err("Unsupported bit depth: %d\n",
+                    sps->bit_depth);
+            ret = MPP_ERR_PROTOL;
             goto err;
         }
         mpp_slots_set_prop(s->slots, SLOTS_LEN_ALIGN, rkv_len_align_422);
     } break;
     case H265_CHROMA_444 : {
-        sps->pix_fmt = MPP_FMT_YUV444SP;
+        switch (sps->bit_depth) {
+        case 8:  sps->pix_fmt = MPP_FMT_YUV444SP; break;
+        case 10: sps->pix_fmt = MPP_FMT_YUV444SP_10BIT; break;
+        default:
+            mpp_err("Unsupported bit depth: %d\n",
+                    sps->bit_depth);
+            ret = MPP_ERR_PROTOL;
+            goto err;
+        }
         mpp_slots_set_prop(s->slots, SLOTS_LEN_ALIGN, rkv_len_align_444);
     } break;
     }
@@ -1724,8 +1734,8 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
 
     sps->vui.sar.num = 0;
     sps->vui.sar.den = 1;
-    READ_ONEBIT(gb, &vui_present);
-    if (vui_present)
+    READ_ONEBIT(gb, &vui_en);
+    if (vui_en)
         decode_vui(s, sps);
 #ifdef SCALED_REF_LAYER_OFFSETS
     if ( s->nuh_layer_id > 0 )   {
@@ -1876,7 +1886,7 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
      */
     if (s->sps_list[sps_id] &&
         !memcmp(s->sps_list[sps_id], sps_buf, sizeof(HEVCSPS))) {
-        mpp_mem_pool_put(s->sps_pool, sps_buf);
+        mpp_mem_pool_put_f(s->sps_pool, sps_buf);
     } else {
         for (i = 0; (RK_U32)i < MPP_ARRAY_ELEMS(s->pps_list); i++) {
             if (s->pps_list[i] && ((HEVCPPS*)s->pps_list[i])->sps_id == sps_id) {
@@ -1885,7 +1895,7 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
             }
         }
         if (s->sps_list[sps_id] != NULL)
-            mpp_mem_pool_put(s->sps_pool, s->sps_list[sps_id]);
+            mpp_mem_pool_put_f(s->sps_pool, s->sps_list[sps_id]);
         s->sps_list[sps_id] = sps_buf;
         s->sps_need_upate = 1;
     }
@@ -1897,7 +1907,7 @@ RK_S32 mpp_hevc_decode_nal_sps(HEVCContext *s)
 __BITREAD_ERR:
     ret = MPP_ERR_STREAM;
 err:
-    mpp_mem_pool_put(s->sps_pool, sps_buf);
+    mpp_mem_pool_put_f(s->sps_pool, sps_buf);
     return ret;
 }
 

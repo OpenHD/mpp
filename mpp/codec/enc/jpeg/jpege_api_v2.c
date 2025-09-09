@@ -25,6 +25,7 @@
 #include "mpp_2str.h"
 #include "mpp_enc_cfg_impl.h"
 #include "mpp_bitwrite.h"
+#include "mpp_soc.h"
 
 #include "jpege_debug.h"
 #include "jpege_api_v2.h"
@@ -383,8 +384,7 @@ static MPP_RET jpege_proc_cfg(void *ctx, MpiCmd cmd, void *param)
 
     switch (cmd) {
     case MPP_ENC_SET_CFG : {
-        MppEncCfgImpl *impl = (MppEncCfgImpl *)param;
-        MppEncCfgSet *src = &impl->cfg;
+        MppEncCfgSet *src = (MppEncCfgSet *)param;
 
         if (src->prep.change) {
             ret |= jpege_proc_prep_cfg(&cfg->prep, &src->prep);

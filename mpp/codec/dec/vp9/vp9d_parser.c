@@ -387,8 +387,8 @@ static RK_S32 vp9_alloc_frame(Vp9CodecContext *ctx, VP9Frame *frame)
     mpp_frame_set_width(frame->f, ctx->width);
     mpp_frame_set_height(frame->f, ctx->height);
 
-    mpp_frame_set_hor_stride(frame->f, ctx->width * s->bpp / 8);
-    mpp_frame_set_ver_stride(frame->f, ctx->height);
+    mpp_frame_set_hor_stride(frame->f, 0);
+    mpp_frame_set_ver_stride(frame->f, 0);
     mpp_frame_set_errinfo(frame->f, 0);
     mpp_frame_set_discard(frame->f, 0);
     mpp_frame_set_pts(frame->f, s->pts);

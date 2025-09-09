@@ -241,6 +241,8 @@ typedef enum SlotsPropType_e {
     SLOTS_SIZE,
     SLOTS_FRAME_INFO,
     SLOTS_HAL_FBC_ADJ,
+    SLOTS_CODING_TYPE,
+    SLOTS_WIDTH_ALIGN,
     SLOTS_PROP_BUTT,
 } SlotsPropType;
 

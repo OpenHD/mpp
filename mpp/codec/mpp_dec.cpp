@@ -22,7 +22,7 @@
 
 #include "mpp_buffer_impl.h"
 #include "mpp_frame_impl.h"
-#include "mpp_dec_cfg_impl.h"
+#include "mpp_dec_cfg.h"
 
 #include "mpp_dec_debug.h"
 #include "mpp_dec_vproc.h"
@@ -61,7 +61,7 @@ void dec_task_init(DecTask *task)
 
 static MPP_RET mpp_dec_update_cfg(MppDecImpl *p)
 {
-    MppDecCfgSet *cfg = &p->cfg;
+    MppDecCfgSet *cfg = p->cfg;
     MppDecBaseCfg *base = &cfg->base;
     MppDecStatusCfg *status = &cfg->status;
 
@@ -75,6 +75,7 @@ static MPP_RET mpp_dec_update_cfg(MppDecImpl *p)
     p->parser_fast_mode     = base->fast_parse;
     p->enable_deinterlace   = base->enable_vproc;
     p->disable_error        = base->disable_error;
+    p->dis_err_clr_mark     = base->dis_err_clr_mark;
 
     mpp_env_get_u32("enable_deinterlace", &p->enable_deinterlace, base->enable_vproc);
 
@@ -83,7 +84,7 @@ static MPP_RET mpp_dec_update_cfg(MppDecImpl *p)
 
 static MPP_RET mpp_dec_check_fbc_cap(MppDecImpl *p)
 {
-    MppDecBaseCfg *base = &p->cfg.base;
+    MppDecBaseCfg *base = &p->cfg->base;
 
     if (MPP_FRAME_FMT_IS_FBC(base->out_fmt)) {
         RK_U32 fbc = (RK_U32)base->out_fmt & MPP_FRAME_FBC_MASK;
@@ -114,8 +115,8 @@ MPP_RET mpp_dec_proc_cfg(MppDecImpl *dec, MpiCmd cmd, void *param)
         MppFrame frame = (MppFrame)param;
 
         /* update output frame format */
-        dec->cfg.base.out_fmt = mpp_frame_get_fmt(frame);
-        mpp_log_f("found MPP_DEC_SET_FRAME_INFO fmt %x\n", dec->cfg.base.out_fmt);
+        dec->cfg->base.out_fmt = mpp_frame_get_fmt(frame);
+        mpp_log_f("found MPP_DEC_SET_FRAME_INFO fmt %x\n", dec->cfg->base.out_fmt);
 
         mpp_slots_set_prop(dec->frame_slots, SLOTS_FRAME_INFO, frame);
 
@@ -140,13 +141,15 @@ MPP_RET mpp_dec_proc_cfg(MppDecImpl *dec, MpiCmd cmd, void *param)
     case MPP_DEC_SET_IMMEDIATE_OUT :
     case MPP_DEC_SET_OUTPUT_FORMAT :
     case MPP_DEC_SET_DISABLE_ERROR :
+    case MPP_DEC_SET_DIS_ERR_CLR_MARK :
     case MPP_DEC_SET_ENABLE_DEINTERLACE :
     case MPP_DEC_SET_ENABLE_FAST_PLAY :
     case MPP_DEC_SET_ENABLE_MVC :
     case MPP_DEC_SET_DISABLE_DPB_CHECK: {
-        ret = mpp_dec_set_cfg_by_cmd(&dec->cfg, cmd, param);
+        ret = mpp_dec_set_cfg_by_cmd(dec->cfg_obj, cmd, param);
         mpp_dec_update_cfg(dec);
-        dec->cfg.base.change = 0;
+        mpp_dec_check_fbc_cap(dec);
+        dec->cfg->base.change = 0;
     } break;
     case MPP_DEC_QUERY: {
         MppDecQueryCfg *query = (MppDecQueryCfg *)param;
@@ -176,10 +179,8 @@ MPP_RET mpp_dec_proc_cfg(MppDecImpl *dec, MpiCmd cmd, void *param)
             query->dec_out_frm_cnt = dec->dec_out_frame_count;
     } break;
     case MPP_DEC_SET_CFG: {
-        MppDecCfgImpl *dec_cfg = (MppDecCfgImpl *)param;
-
-        if (dec_cfg) {
-            mpp_dec_set_cfg(&dec->cfg, &dec_cfg->cfg);
+        if (param) {
+            kmpp_obj_update(dec->cfg_obj, (KmppObj)param);
             mpp_dec_update_cfg(dec);
             mpp_dec_check_fbc_cap(dec);
         }
@@ -187,10 +188,8 @@ MPP_RET mpp_dec_proc_cfg(MppDecImpl *dec, MpiCmd cmd, void *param)
         dec_dbg_func("set dec cfg\n");
     } break;
     case MPP_DEC_GET_CFG: {
-        MppDecCfgImpl *dec_cfg = (MppDecCfgImpl *)param;
-
-        if (dec_cfg)
-            memcpy(&dec_cfg->cfg, &dec->cfg, sizeof(dec->cfg));
+        if (param)
+            ret = (MPP_RET)kmpp_obj_copy_entry(param, dec->cfg_obj);
 
         dec_dbg_func("get dec cfg\n");
     } break;
@@ -232,16 +231,16 @@ void mpp_dec_put_frame(Mpp *mpp, RK_S32 index, HalDecTaskFlag flags)
                 if (dec_vproc_get_version(dec->vproc) == 1 && mode == MPP_FRAME_FLAG_DEINTERLACED) {
                     mpp_frame_set_mode(frame, MPP_FRAME_FLAG_FRAME);
                     /*iep 1 can't no detect DEINTERLACED, direct disable*/
-                    dec->cfg.base.enable_vproc &= (~MPP_VPROC_MODE_DETECTION);
-                    dec->enable_deinterlace = dec->cfg.base.enable_vproc;
+                    dec->cfg->base.enable_vproc &= (~MPP_VPROC_MODE_DETECTION);
+                    dec->enable_deinterlace = dec->cfg->base.enable_vproc;
                     if (dec->vproc && !dec->enable_deinterlace) {
                         dec_vproc_deinit(dec->vproc);
                         dec->vproc = NULL;
                     }
                     dec->vproc = NULL;
                 } else {
-                    if (mode == MPP_FRAME_FLAG_DEINTERLACED)
-                        dec_vproc_enable_detect(dec->vproc);
+                    /* store current IEP mode */
+                    dec_vproc_set_mode(dec->vproc, (MppVprocMode)dec->enable_deinterlace);
 
                     dec->vproc_tasks = cfg.task_group;
                     dec_vproc_start(dec->vproc);
@@ -292,13 +291,13 @@ void mpp_dec_put_frame(Mpp *mpp, RK_S32 index, HalDecTaskFlag flags)
     mpp_assert(index >= 0);
     mpp_assert(frame);
 
-    if (dec->cfg.base.disable_error) {
+    if (dec->cfg->base.disable_error && dec->cfg->base.dis_err_clr_mark) {
         mpp_frame_set_errinfo(frame, 0);
         mpp_frame_set_discard(frame, 0);
     }
 
     if (!change) {
-        if (dec->cfg.base.sort_pts) {
+        if (dec->cfg->base.sort_pts) {
             MppPktTs *pkt_ts;
 
             mpp_spinlock_lock(&dec->ts_lock);
@@ -309,7 +308,7 @@ void mpp_dec_put_frame(Mpp *mpp, RK_S32 index, HalDecTaskFlag flags)
             if (pkt_ts) {
                 mpp_frame_set_dts(frame, pkt_ts->dts);
                 mpp_frame_set_pts(frame, pkt_ts->pts);
-                mpp_mem_pool_put(dec->ts_pool, pkt_ts);
+                mpp_mem_pool_put_f(dec->ts_pool, pkt_ts);
             }
         }
     }
@@ -370,7 +369,7 @@ void mpp_dec_put_frame(Mpp *mpp, RK_S32 index, HalDecTaskFlag flags)
         dec_vproc_signal(dec->vproc);
     } else {
         // direct output -> copy a new MppFrame and output
-        mpp_list *list = mpp->mFrmOut;
+        MppList *list = mpp->mFrmOut;
         MppFrame out = NULL;
 
         mpp_frame_init(&out);
@@ -378,11 +377,11 @@ void mpp_dec_put_frame(Mpp *mpp, RK_S32 index, HalDecTaskFlag flags)
 
         mpp_dbg_pts("output frame pts %lld\n", mpp_frame_get_pts(out));
 
-        list->lock();
-        list->add_at_tail(&out, sizeof(out));
+        mpp_mutex_cond_lock(&list->cond_lock);
+        mpp_list_add_at_tail(list, &out, sizeof(out));
         mpp->mFramePutCount++;
-        list->signal();
-        list->unlock();
+        mpp_list_signal(list);
+        mpp_mutex_cond_unlock(&list->cond_lock);
 
         if (fake_frame)
             mpp_frame_deinit(&frame);
@@ -412,7 +411,7 @@ RK_S32 mpp_dec_push_display(Mpp *mpp, HalDecTaskFlag flags)
     tmp.info_change = 0;
 
     if (dec->thread_hal)
-        dec->thread_hal->lock(THREAD_OUTPUT);
+        mpp_thread_lock(dec->thread_hal, THREAD_OUTPUT);
 
     while (MPP_OK == mpp_buf_slot_dequeue(frame_slots, &index, QUEUE_DISPLAY)) {
         /* deal with current frame */
@@ -425,7 +424,7 @@ RK_S32 mpp_dec_push_display(Mpp *mpp, HalDecTaskFlag flags)
     }
 
     if (dec->thread_hal)
-        dec->thread_hal->unlock(THREAD_OUTPUT);
+        mpp_thread_unlock(dec->thread_hal, THREAD_OUTPUT);
 
     return ret;
 }
@@ -477,96 +476,6 @@ static const char *timing_str[DEC_TIMING_BUTT] = {
     "hal proc  ",
     "hw wait   ",
 };
-
-MPP_RET mpp_dec_set_cfg(MppDecCfgSet *dst, MppDecCfgSet *src)
-{
-    MppDecBaseCfg *src_base = &src->base;
-    MppDecCbCfg *src_cb = &src->cb;
-
-    if (src_base->change) {
-        MppDecBaseCfg *dst_base = &dst->base;
-        RK_U32 change = src_base->change;
-
-        if (change & MPP_DEC_CFG_CHANGE_TYPE)
-            dst_base->type = src_base->type;
-
-        if (change & MPP_DEC_CFG_CHANGE_CODING)
-            dst_base->coding = src_base->coding;
-
-        if (change & MPP_DEC_CFG_CHANGE_HW_TYPE)
-            dst_base->hw_type = src_base->hw_type;
-
-        if (change & MPP_DEC_CFG_CHANGE_BATCH_MODE)
-            dst_base->batch_mode = src_base->batch_mode;
-
-        if (change & MPP_DEC_CFG_CHANGE_OUTPUT_FORMAT)
-            dst_base->out_fmt = src_base->out_fmt;
-
-        if (change & MPP_DEC_CFG_CHANGE_FAST_OUT)
-            dst_base->fast_out = src_base->fast_out;
-
-        if (change & MPP_DEC_CFG_CHANGE_FAST_PARSE)
-            dst_base->fast_parse = src_base->fast_parse;
-
-        if (change & MPP_DEC_CFG_CHANGE_SPLIT_PARSE)
-            dst_base->split_parse = src_base->split_parse;
-
-        if (change & MPP_DEC_CFG_CHANGE_INTERNAL_PTS)
-            dst_base->internal_pts = src_base->internal_pts;
-
-        if (change & MPP_DEC_CFG_CHANGE_SORT_PTS)
-            dst_base->sort_pts = src_base->sort_pts;
-
-        if (change & MPP_DEC_CFG_CHANGE_DISABLE_ERROR)
-            dst_base->disable_error = src_base->disable_error;
-
-        if (change & MPP_DEC_CFG_CHANGE_ENABLE_VPROC)
-            dst_base->enable_vproc = src_base->enable_vproc;
-
-        if (change & MPP_DEC_CFG_CHANGE_ENABLE_FAST_PLAY)
-            dst_base->enable_fast_play = src_base->enable_fast_play;
-
-        if (change & MPP_DEC_CFG_CHANGE_ENABLE_HDR_META)
-            dst_base->enable_hdr_meta = src_base->enable_hdr_meta;
-
-        if (change & MPP_DEC_CFG_CHANGE_ENABLE_THUMBNAIL)
-            dst_base->enable_thumbnail = src_base->enable_thumbnail;
-
-        if (change & MPP_DEC_CFG_CHANGE_ENABLE_MVC)
-            dst_base->enable_mvc = src_base->enable_mvc;
-
-        if (change & MPP_DEC_CFG_CHANGE_DISABLE_DPB_CHECK)
-            dst_base->disable_dpb_chk = src_base->disable_dpb_chk;
-
-        if (change & MPP_DEC_CFG_CHANGE_DISABLE_THREAD)
-            dst_base->disable_thread = src_base->disable_thread;
-
-        dst_base->change = change;
-        src_base->change = 0;
-    }
-
-    if (src_cb->change) {
-        MppDecCbCfg *dst_cb = &dst->cb;
-        RK_U32 change = src_cb->change;
-
-        if (change & MPP_DEC_CB_CFG_CHANGE_PKT_RDY) {
-            dst_cb->pkt_rdy_cb = src_cb->pkt_rdy_cb;
-            dst_cb->pkt_rdy_ctx = src_cb->pkt_rdy_ctx;
-            dst_cb->pkt_rdy_cmd = src_cb->pkt_rdy_cmd;
-        }
-
-        if (change & MPP_DEC_CB_CFG_CHANGE_FRM_RDY) {
-            dst_cb->frm_rdy_cb = src_cb->frm_rdy_cb;
-            dst_cb->frm_rdy_ctx = src_cb->frm_rdy_ctx;
-            dst_cb->frm_rdy_cmd = src_cb->frm_rdy_cmd;
-        }
-
-        dst_cb->change = change;
-        src_cb->change = 0;
-    }
-
-    return MPP_OK;
-}
 
 MPP_RET mpp_dec_callback_hal_to_parser(const char *caller, void *ctx,
                                        RK_S32 cmd, void *param)
@@ -626,12 +535,13 @@ MPP_RET mpp_dec_init(MppDec *dec, MppDecInitCfg *cfg)
     }
 
     p->mpp = mpp;
+    mpp_dec_cfg_init(&p->cfg_obj);
+    dec_cfg = (MppDecCfgSet *)kmpp_obj_to_entry(p->cfg_obj);
+    p->cfg = dec_cfg;
     coding = cfg->coding;
-    dec_cfg = &p->cfg;
 
     mpp_assert(cfg->cfg);
-    mpp_dec_cfg_set_default(dec_cfg);
-    mpp_dec_set_cfg(dec_cfg, cfg->cfg);
+    kmpp_obj_update(p->cfg_obj, cfg->cfg);
     mpp_dec_update_cfg(p);
 
     p->dec_cb.callBack = mpp_dec_callback_hal_to_parser;
@@ -702,6 +612,8 @@ MPP_RET mpp_dec_init(MppDec *dec, MppDecInitCfg *cfg)
         }
 
         mpp_buf_slot_setup(packet_slots, hal_task_count);
+        mpp_slots_set_prop(packet_slots, SLOTS_CODING_TYPE, &coding);
+        mpp_slots_set_prop(frame_slots, SLOTS_CODING_TYPE, &coding);
 
         p->hw_info = hal_cfg.hw_info;
         p->dev = hal_cfg.dev;
@@ -743,13 +655,13 @@ MPP_RET mpp_dec_init(MppDec *dec, MppDecInitCfg *cfg)
             mpp_clock_enable(p->clocks[i], p->statistics_en);
         }
 
-        p->cmd_lock = new MppMutexCond();
+        mpp_mutex_cond_init(&p->cmd_lock);
         sem_init(&p->parser_reset, 0, 0);
         sem_init(&p->hal_reset, 0, 0);
         sem_init(&p->cmd_start, 0, 0);
         sem_init(&p->cmd_done, 0, 0);
 
-        if (p->cfg.base.disable_thread) {
+        if (p->cfg->base.disable_thread) {
             DecTask *task = mpp_calloc(DecTask, 1);
 
             mpp_assert(task);
@@ -765,7 +677,7 @@ MPP_RET mpp_dec_init(MppDec *dec, MppDecInitCfg *cfg)
         // init timestamp for record and sort pts
         mpp_spinlock_init(&p->ts_lock);
         INIT_LIST_HEAD(&p->ts_link);
-        p->ts_pool = mpp_mem_pool_init(sizeof(MppPktTs));
+        p->ts_pool = mpp_mem_pool_init_f("ts_pool", sizeof(MppPktTs));
         if (!p->ts_pool) {
             mpp_err_f("malloc ts pool failed!\n");
             break;
@@ -850,10 +762,7 @@ MPP_RET mpp_dec_deinit(MppDec ctx)
         dec->packet_slots = NULL;
     }
 
-    if (dec->cmd_lock) {
-        delete dec->cmd_lock;
-        dec->cmd_lock = NULL;
-    }
+    mpp_mutex_cond_destroy(&dec->cmd_lock);
 
     sem_destroy(&dec->parser_reset);
     sem_destroy(&dec->hal_reset);
@@ -861,9 +770,15 @@ MPP_RET mpp_dec_deinit(MppDec ctx)
     sem_destroy(&dec->cmd_done);
 
     if (dec->ts_pool) {
-        mpp_mem_pool_deinit(dec->ts_pool);
+        mpp_mem_pool_deinit_f(dec->ts_pool);
         dec->ts_pool = NULL;
     }
+
+    if (dec->cfg_obj) {
+        mpp_dec_cfg_deinit(dec->cfg_obj);
+        dec->cfg_obj = NULL;
+    }
+    dec->cfg = NULL;
 
     MPP_FREE(dec->task_single);
     mpp_free(dec);
@@ -893,18 +808,18 @@ MPP_RET mpp_dec_stop(MppDec ctx)
     dec_dbg_func("%p in\n", dec);
 
     if (dec->thread_parser)
-        dec->thread_parser->stop();
+        mpp_thread_stop(dec->thread_parser);
 
     if (dec->thread_hal)
-        dec->thread_hal->stop();
+        mpp_thread_stop(dec->thread_hal);
 
     if (dec->thread_parser) {
-        delete dec->thread_parser;
+        mpp_thread_destroy(dec->thread_parser);
         dec->thread_parser = NULL;
     }
 
     if (dec->thread_hal) {
-        delete dec->thread_hal;
+        mpp_thread_destroy(dec->thread_hal);
         dec->thread_hal = NULL;
     }
 
@@ -970,7 +885,7 @@ MPP_RET mpp_dec_notify(MppDec ctx, RK_U32 flag)
 MPP_RET mpp_dec_callback(MppDec ctx, MppDecEvent event, void *arg)
 {
     MppDecImpl *dec = (MppDecImpl *)ctx;
-    MppDecCbCfg *cb = &dec->cfg.cb;
+    MppDecCbCfg *cb = &dec->cfg->cb;
     Mpp *mpp = (Mpp *)dec->mpp;
     MPP_RET ret = MPP_OK;
 
@@ -1012,60 +927,60 @@ MPP_RET mpp_dec_control(MppDec ctx, MpiCmd cmd, void *param)
     return ret;
 }
 
-MPP_RET mpp_dec_set_cfg_by_cmd(MppDecCfgSet *set, MpiCmd cmd, void *param)
+MPP_RET mpp_dec_set_cfg_by_cmd(MppDecCfg cfg, MpiCmd cmd, void *param)
 {
-    MppDecBaseCfg *cfg = &set->base;
+    MppDecCfgSet *dst = (MppDecCfgSet *)kmpp_obj_to_entry(cfg);
+    MppDecBaseCfg *base = &dst->base;
     MPP_RET ret = MPP_OK;
 
     switch (cmd) {
     case MPP_DEC_SET_PRESENT_TIME_ORDER : {
-        cfg->sort_pts = (param) ? (*((RK_U32 *)param)) : (1);
-        cfg->change |= MPP_DEC_CFG_CHANGE_SORT_PTS;
-        dec_dbg_func("sort time order %d\n", cfg->sort_pts);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:sort_pts", (param) ? (*((RK_U32 *)param)) : (1));
+        dec_dbg_func("sort time order %d\n", base->sort_pts);
     } break;
     case MPP_DEC_SET_PARSER_SPLIT_MODE : {
-        cfg->split_parse = (param) ? (*((RK_U32 *)param)) : (0);
-        cfg->change |= MPP_DEC_CFG_CHANGE_SPLIT_PARSE;
-        dec_dbg_func("split parse mode %d\n", cfg->split_parse);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:split_parse", (param) ? (*((RK_U32 *)param)) : (0));
+        dec_dbg_func("split parse mode %d\n", base->split_parse);
     } break;
     case MPP_DEC_SET_PARSER_FAST_MODE : {
-        cfg->fast_parse = (param) ? (*((RK_U32 *)param)) : (0);
-        cfg->change |= MPP_DEC_CFG_CHANGE_FAST_PARSE;
-        dec_dbg_func("fast parse mode %d\n", cfg->fast_parse);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:fast_parse", (param) ? (*((RK_U32 *)param)) : (0));
+        dec_dbg_func("fast parse mode %d\n", base->fast_parse);
     } break;
     case MPP_DEC_SET_OUTPUT_FORMAT : {
-        cfg->out_fmt = (param) ? (*((MppFrameFormat *)param)) : (MPP_FMT_YUV420SP);
-        cfg->change |= MPP_DEC_CFG_CHANGE_OUTPUT_FORMAT;
+        ret = mpp_dec_cfg_set_u32(cfg, "base:out_fmt", (param) ? (*((RK_U32 *)param)) : (RK_U32)(MPP_FMT_YUV420SP));
+        dec_dbg_func("fast out_fmt %d\n", base->out_fmt);
     } break;
     case MPP_DEC_SET_DISABLE_ERROR: {
-        cfg->disable_error = (param) ? (*((RK_U32 *)param)) : (1);
-        cfg->change |= MPP_DEC_CFG_CHANGE_DISABLE_ERROR;
-        dec_dbg_func("disable error %d\n", cfg->disable_error);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:disable_error", (param) ? (*((RK_U32 *)param)) : (1));
+        dec_dbg_func("disable error %d\n", base->disable_error);
+    } break;
+    case MPP_DEC_SET_DIS_ERR_CLR_MARK: {
+        ret = mpp_dec_cfg_set_u32(cfg, "base:dis_err_clr_mark", (param) ? (*((RK_U32 *)param)) : (1));
+        dec_dbg_func("disable error mark %x\n", base->dis_err_clr_mark);
     } break;
     case MPP_DEC_SET_IMMEDIATE_OUT : {
-        cfg->fast_out = (param) ? (*((RK_U32 *)param)) : (0);
-        cfg->change |= MPP_DEC_CFG_CHANGE_FAST_OUT;
-        dec_dbg_func("fast output mode %d\n", cfg->fast_out);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:fast_out", (param) ? (*((RK_U32 *)param)) : (0));
+        dec_dbg_func("fast output mode %d\n", base->fast_out);
     } break;
     case MPP_DEC_SET_ENABLE_DEINTERLACE: {
-        cfg->enable_vproc = (param) ? (*((RK_U32 *)param)) : MPP_VPROC_MODE_DEINTELACE;
-        cfg->change |= MPP_DEC_CFG_CHANGE_ENABLE_VPROC;
-        dec_dbg_func("enable dec_vproc %x\n", cfg->enable_vproc);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:enable_vproc", (param) ? (*((RK_U32 *)param)) : (MPP_VPROC_MODE_DEINTELACE));
+        dec_dbg_func("enable dec_vproc %x\n", base->enable_vproc);
     } break;
     case MPP_DEC_SET_ENABLE_FAST_PLAY : {
-        cfg->enable_fast_play = (param) ? (*((RK_U32 *)param)) : (0);
-        cfg->change |= MPP_DEC_CFG_CHANGE_ENABLE_FAST_PLAY;
-        dec_dbg_func("disable idr immediately output %d\n", cfg->enable_fast_play);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:enable_fast_play", (param) ? (*((RK_U32 *)param)) : (0));
+        dec_dbg_func("disable idr immediately output %d\n", base->enable_fast_play);
     } break;
     case MPP_DEC_SET_ENABLE_MVC : {
-        cfg->enable_mvc = (param) ? (*((RK_U32 *)param)) : (0);
-        cfg->change |= MPP_DEC_CFG_CHANGE_ENABLE_MVC;
-        dec_dbg_func("enable MVC decoder %d\n", cfg->enable_mvc);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:enable_mvc", (param) ? (*((RK_U32 *)param)) : (0));
+        dec_dbg_func("enable MVC decoder %d\n", base->enable_mvc);
     } break;
     case MPP_DEC_SET_DISABLE_DPB_CHECK : {
-        cfg->disable_dpb_chk = (param) ? (*((RK_U32 *)param)) : (0);
-        cfg->change |= MPP_DEC_CFG_CHANGE_DISABLE_DPB_CHECK;
-        dec_dbg_func("disable dpb discontinuous check %d\n", cfg->disable_dpb_chk);
+        ret = mpp_dec_cfg_set_u32(cfg, "base:disable_dpb_chk", (param) ? (*((RK_U32 *)param)) : (0));
+        dec_dbg_func("disable dpb discontinuous check %d\n", base->disable_dpb_chk);
+    } break;
+    case MPP_DEC_SET_CODEC_MODE : {
+        ret = mpp_dec_cfg_set_u32(cfg, "base:codec_mode", (param) ? (*((RK_U32 *)param)) : (0));
+        dec_dbg_func("force use codec device %d\n", base->codec_mode);
     } break;
     default : {
         mpp_err_f("unsupported cfg update cmd %x\n", cmd);

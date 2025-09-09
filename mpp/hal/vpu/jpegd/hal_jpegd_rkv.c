@@ -453,7 +453,8 @@ static MPP_RET jpegd_gen_regs(JpegdHalCtx *ctx, JpegdSyntax *syntax)
 
     y_virstride = y_hor_stride * out_height;
     if (regs->reg2_sys.dec_out_sequence == OUTPUT_TILE) {
-        if (mpp_get_soc_type() == ROCKCHIP_SOC_RK3576) {
+        // The new JPEG decoder supports tile 4x4 output by default.
+        if (mpp_get_soc_type() >= ROCKCHIP_SOC_RK3576) {
             switch (regs->reg2_sys.yuv_out_format) {
             case YUV_OUT_FMT_2_YUYV:
                 y_hor_stride = y_hor_stride * 4 * 2;
@@ -545,21 +546,9 @@ static MPP_RET jpegd_gen_regs(JpegdHalCtx *ctx, JpegdSyntax *syntax)
     regs->reg13_dec_out_base = ctx->frame_fd;
     regs->reg12_strm_base = ctx->pkt_fd;
 
-    MppDevRegOffsetCfg trans_cfg_10;
-    MppDevRegOffsetCfg trans_cfg_11;
-    MppDevRegOffsetCfg trans_cfg_12;
-
-    trans_cfg_12.reg_idx = 12;
-    trans_cfg_12.offset = hw_strm_offset;
-    mpp_dev_ioctl(ctx->dev, MPP_DEV_REG_OFFSET, &trans_cfg_12);
-
-    trans_cfg_10.reg_idx = 10;
-    trans_cfg_10.offset = RKD_HUFFMAN_MINCODE_TBL_OFFSET;
-    mpp_dev_ioctl(ctx->dev, MPP_DEV_REG_OFFSET, &trans_cfg_10);
-
-    trans_cfg_11.reg_idx = 11;
-    trans_cfg_11.offset = RKD_HUFFMAN_VALUE_TBL_OFFSET;
-    mpp_dev_ioctl(ctx->dev, MPP_DEV_REG_OFFSET, &trans_cfg_11);
+    mpp_dev_set_reg_offset(ctx->dev, 12, hw_strm_offset);
+    mpp_dev_set_reg_offset(ctx->dev, 10, RKD_HUFFMAN_MINCODE_TBL_OFFSET);
+    mpp_dev_set_reg_offset(ctx->dev, 11, RKD_HUFFMAN_VALUE_TBL_OFFSET);
 
     regs->reg14_strm_error.error_prc_mode = 1;
     regs->reg14_strm_error.strm_ffff_err_mode = 2;
@@ -833,7 +822,8 @@ MPP_RET hal_jpegd_rkv_control(void *hal, MpiCmd cmd_type, void *param)
         }
 
         if (MPP_FRAME_FMT_IS_RGB(output_fmt)) {
-            if (soc_type == ROCKCHIP_SOC_RK3576) {
+            // The new JPEG decoder defaults to no RGB support.
+            if (soc_type >= ROCKCHIP_SOC_RK3576) {
                 ret = MPP_ERR_VALUE;
             } else if (soc_type >= ROCKCHIP_SOC_RK3588) {
                 // only rgb565be and rgb888 supported

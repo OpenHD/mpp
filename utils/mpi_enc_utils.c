@@ -94,8 +94,10 @@ MpiEncTestArgs *mpi_enc_test_cmd_get(void)
 {
     MpiEncTestArgs *args = mpp_calloc(MpiEncTestArgs, 1);
 
-    if (args)
+    if (args) {
         args->nthreads = 1;
+        args->frm_step = 1;
+    }
 
     return args;
 }
@@ -475,6 +477,19 @@ RK_S32 mpi_enc_opt_slt(void *ctx, const char *next)
     return 0;
 }
 
+RK_S32 mpi_enc_opt_step(void *ctx, const char *next)
+{
+    MpiEncTestArgs *cmd = (MpiEncTestArgs *)ctx;
+
+    if (next) {
+        cmd->frm_step = atoi(next);
+        return 1;
+    }
+
+    mpp_err("invalid input frame step\n");
+    return 0;
+}
+
 RK_S32 mpi_enc_opt_sm(void *ctx, const char *next)
 {
     MpiEncTestArgs *cmd = (MpiEncTestArgs *)ctx;
@@ -540,7 +555,16 @@ RK_S32 mpi_enc_opt_atf(void *ctx, const char *next)
     MpiEncTestArgs *cmd = (MpiEncTestArgs *)ctx;
 
     if (next) {
-        cmd->anti_flicker_str = atoi(next);
+        RK_S32 val = atoi(next);
+
+        if (val >= 0 && val <= 3 ) {
+            cmd->anti_flicker_str = val;
+            cmd->atf_str = val;
+        } else {
+            cmd->anti_flicker_str = 0;
+            cmd->atf_str = 0;
+            mpp_err("invalid atf_str %d set to default 0\n", val);
+        }
         return 1;
     }
 
@@ -652,6 +676,68 @@ RK_S32 mpi_enc_opt_bias_p(void *ctx, const char *next)
     return 0;
 }
 
+RK_S32 mpi_enc_opt_lmd(void *ctx, const char *next)
+{
+    MpiEncTestArgs *cmd = (MpiEncTestArgs *)ctx;
+
+    if (next) {
+        cmd->lambda_idx_p = atoi(next);
+        return 1;
+    }
+
+    mpp_err("invalid lambda idx\n");
+    return 0;
+}
+
+RK_S32 mpi_enc_opt_lmdi(void *ctx, const char *next)
+{
+    MpiEncTestArgs *cmd = (MpiEncTestArgs *)ctx;
+
+    if (next) {
+        cmd->lambda_idx_i = atoi(next);
+        return 1;
+    }
+
+    mpp_err("invalid intra lambda idx\n");
+    return 0;
+}
+
+RK_S32 mpi_enc_opt_speed(void *ctx, const char *next)
+{
+    MpiEncTestArgs *cmd = (MpiEncTestArgs *)ctx;
+
+    if (next) {
+        cmd->speed = atoi(next);
+        if (cmd->speed > 3 || cmd->speed < 0) {
+            cmd->speed = 0;
+            mpp_err("invalid speed %d set to default 0\n", cmd->speed);
+        }
+        return 1;
+    }
+
+    mpp_err("invalid speed mode\n");
+    return 0;
+}
+
+RK_S32 mpi_enc_opt_kmpp(void *ctx, const char *next)
+{
+    MpiEncTestArgs *cmd = (MpiEncTestArgs *)ctx;
+
+    if (next) {
+        cmd->kmpp_en = atoi(next);
+        if (cmd->kmpp_en) {
+            if (access("/dev/vcodec", F_OK | R_OK | W_OK)) {
+                mpp_err("failed to access /dev/vcodec, check kmpp devices\n");
+                return -1;
+            }
+        }
+        return 1;
+    }
+
+    mpp_err("invalid kmpp enable\n");
+    return 0;
+}
+
 static MppOptInfo enc_opts[] = {
     {"i",       "input_file",           "input frame file",                         mpi_enc_opt_i},
     {"o",       "output_file",          "output encoded bitstream file",            mpi_enc_opt_o},
@@ -674,6 +760,7 @@ static MppOptInfo enc_opts[] = {
     {"l",       "loop count",           "loop encoding times for each frame",       mpi_enc_opt_l},
     {"ini",     "ini file",             "encoder extra ini config file",            mpi_enc_opt_ini},
     {"slt",     "slt file",             "slt verify data file",                     mpi_enc_opt_slt},
+    {"step",    "frame step",           "frame step, only for NV12 in slt test",    mpi_enc_opt_step},
     {"sm",      "scene mode",           "scene_mode, 0:default 1:ipc",              mpi_enc_opt_sm},
     {"qpdd",    "cu_qp_delta_depth",    "cu_qp_delta_depth, 0:1:2",                 mpi_enc_opt_qpdd},
     {"dbe",     "deblur enable",        "deblur_en or qpmap_en, 0:close 1:open",           mpi_enc_opt_dbe},
@@ -686,7 +773,11 @@ static MppOptInfo enc_opts[] = {
     {"sao_p",   "sao_str_p",            "sao_str_p, 0:off 1 2 3",                   mpi_enc_opt_sao_p},
     {"bc",      "bitrate container",    "rc_container, 0:off 1:weak 2:strong",      mpi_enc_opt_bc},
     {"ibias",   "bias i",               "bias_i",                                   mpi_enc_opt_bias_i},
-    {"pbias",   "bias p",               "bias_p",                                   mpi_enc_opt_bias_p}
+    {"pbias",   "bias p",               "bias_p",                                   mpi_enc_opt_bias_p},
+    {"lmd",     "lambda idx",           "lambda_idx_p 0~8",                         mpi_enc_opt_lmd},
+    {"lmdi",    "lambda i idx",         "lambda_idx_i 0~8",                         mpi_enc_opt_lmdi},
+    {"speed",   "enc speed",            "speed mode",                               mpi_enc_opt_speed},
+    {"kmpp",    "kmpp path enable",     "kmpp path enable",                         mpi_enc_opt_kmpp}
 };
 
 static RK_U32 enc_opt_cnt = MPP_ARRAY_ELEMS(enc_opts);
@@ -758,7 +849,6 @@ MPP_RET mpi_enc_test_cmd_update_by_args(MpiEncTestArgs* cmd, int argc, char **ar
     cmd->rc_mode = MPP_ENC_RC_MODE_BUTT;
 
     mpp_opt_init(&opts);
-    /* should change node count when option increases */
     mpp_opt_setup(opts, cmd);
 
     for (i = 0; i < enc_opt_cnt; i++)
@@ -1186,8 +1276,10 @@ MPP_RET mpi_enc_test_cmd_show_opt(MpiEncTestArgs* cmd)
     mpp_log("height     : %d\n", cmd->height);
     mpp_log("format     : %d\n", cmd->format);
     mpp_log("type       : %d\n", cmd->type);
-    if (cmd->file_slt)
+    if (cmd->file_slt) {
         mpp_log("verify     : %s\n", cmd->file_slt);
+        mpp_log("frame step : %d\n", cmd->frm_step);
+    }
 
     return MPP_OK;
 }

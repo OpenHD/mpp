@@ -26,7 +26,6 @@
 #include "mpp_enc_cfg_impl.h"
 
 #include "vp8e_api_v2.h"
-#include "vp8e_rc.h"
 #include "vp8e_syntax.h"
 
 #define VP8E_DBG_FUNCTION            (0x00000001)
@@ -295,8 +294,7 @@ static MPP_RET vp8e_proc_cfg(void *ctx, MpiCmd cmd, void *param)
     MPP_RET ret = MPP_OK;
     Vp8eCtx *p = (Vp8eCtx *)ctx;
     MppEncCfgSet *cfg = p->cfg;
-    MppEncCfgImpl *impl = (MppEncCfgImpl *)param;
-    MppEncCfgSet *src = &impl->cfg;
+    MppEncCfgSet *src = (MppEncCfgSet *)param;
 
     vp8e_dbg_fun("enter ctx %p cmd %x param %p\n", ctx, cmd, param);
     switch (cmd) {

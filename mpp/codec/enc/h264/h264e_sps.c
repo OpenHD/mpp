@@ -104,7 +104,7 @@ MPP_RET h264e_sps_update(H264eSps *sps, MppEncCfgSet *cfg)
         sps->constraint_set0 = 0;
         sps->constraint_set1 = 0;
         sps->constraint_set2 = 0;
-        sps->constraint_set3 = 1;
+        sps->constraint_set3 = 0;
         sps->constraint_set4 = 0;
         sps->constraint_set5 = 0;
     } break;
@@ -215,7 +215,7 @@ MPP_RET h264e_sps_update(H264eSps *sps, MppEncCfgSet *cfg)
     }
 
     memset(vui, 0, sizeof(*vui));
-    vui->vui_present = 1;
+    vui->vui_en = h264->vui.vui_en;
     vui->timing_info_present = 1;
     vui->time_scale = rc->fps_out_num * 2;
     vui->num_units_in_tick = rc->fps_out_denom;
@@ -352,8 +352,8 @@ MPP_RET h264e_sps_to_packet(H264eSps *sps, MppPacket packet, RK_S32 *offset,
     }
 
     /* vui_parameters_present_flag */
-    mpp_writer_put_bits(bit, sps->vui.vui_present, 1);
-    if (sps->vui.vui_present) {
+    mpp_writer_put_bits(bit, sps->vui.vui_en, 1);
+    if (sps->vui.vui_en) {
         H264eVui *vui = &sps->vui;
 
         /* aspect_ratio_info_present_flag */

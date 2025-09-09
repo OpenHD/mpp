@@ -36,6 +36,7 @@
 #include "h264e_api_v2.h"
 #include "rc.h"
 #include "mpp_rc.h"
+#include "mpp_soc.h"
 
 #include "enc_impl_api.h"
 #include "mpp_enc_cfg_impl.h"
@@ -102,6 +103,7 @@ static void init_h264e_cfg_set(MppEncCfgSet *cfg, MppClientType type)
     memset(h264, 0, sizeof(*h264));
     h264->profile = H264_PROFILE_BASELINE;
     h264->level = H264_LEVEL_3_1;
+    h264->vui.vui_en = 1;
     cfg->tune.scene_mode = MPP_ENC_SCENE_MODE_DEFAULT;
     cfg->tune.deblur_en = 0;
     cfg->tune.vmaf_opt = 0;
@@ -200,6 +202,20 @@ static void init_h264e_cfg_set(MppEncCfgSet *cfg, MppClientType type)
     cfg->tune.atr_str_p = 1;
     cfg->tune.anti_flicker_str = 1;
     cfg->tune.deblur_str = 3;
+
+    /* smart v3 parameters */
+    cfg->tune.bg_delta_qp_i = -10;
+    cfg->tune.bg_delta_qp_p = -10;
+    cfg->tune.fg_delta_qp_i = 3;
+    cfg->tune.fg_delta_qp_p = 1;
+    cfg->tune.bmap_qpmin_i = 30;
+    cfg->tune.bmap_qpmin_p = 30;
+    cfg->tune.bmap_qpmax_i = 45;
+    cfg->tune.bmap_qpmax_p = 47;
+    cfg->tune.min_bg_fqp = 30;
+    cfg->tune.max_bg_fqp = 45;
+    cfg->tune.min_fg_fqp = 25;
+    cfg->tune.max_fg_fqp = 35;
 }
 
 static void h264e_add_syntax(H264eCtx *ctx, H264eSyntaxType type, void *p)
@@ -516,6 +532,11 @@ static MPP_RET h264e_proc_h264_cfg(MppEncH264Cfg *dst, MppEncH264Cfg *src)
             dst->change |= MPP_ENC_H264_CFG_CHANGE_CONSTRAINT_SET;
         }
 
+        if (change & MPP_ENC_H264_CFG_CHANGE_VUI) {
+            dst->vui = src->vui;
+            dst->change |= MPP_ENC_H264_CFG_CHANGE_VUI;
+        }
+
         // check user h.264 config. If valid, set to HAL.
         entropy_coding_mode = dst->entropy_coding_mode_ex;
         cabac_init_idc = dst->cabac_init_idc_ex;
@@ -607,8 +628,7 @@ static MPP_RET h264e_proc_cfg(void *ctx, MpiCmd cmd, void *param)
 
     switch (cmd) {
     case MPP_ENC_SET_CFG : {
-        MppEncCfgImpl *impl = (MppEncCfgImpl *)param;
-        MppEncCfgSet *src = &impl->cfg;
+        MppEncCfgSet *src = (MppEncCfgSet *)param;
 
         if (src->prep.change)
             ret |= h264e_proc_prep_cfg(&cfg->prep, &src->prep);
@@ -670,7 +690,8 @@ static MPP_RET h264e_gen_hdr(void *ctx, MppPacket pkt)
     /*
      * NOTE: When sps/pps is update we need to update dpb and slice info
      */
-    h264e_dpb_setup(&p->dpb, p->cfg, &p->sps);
+    if (!p->dpb.total_cnt)
+        h264e_dpb_setup(&p->dpb, p->cfg, &p->sps);
 
     mpp_packet_reset(p->hdr_pkt);
 
@@ -711,11 +732,13 @@ static MPP_RET h264e_start(void *ctx, HalEncTask *task)
         RK_S32 force_use_lt_idx = -1;
         RK_S32 force_frame_qp = -1;
         RK_S32 base_layer_pid = -1;
+        RK_S32 force_tid = -1;
 
         mpp_meta_get_s32(meta, KEY_ENC_MARK_LTR, &force_lt_idx);
         mpp_meta_get_s32(meta, KEY_ENC_USE_LTR, &force_use_lt_idx);
         mpp_meta_get_s32(meta, KEY_ENC_FRAME_QP, &force_frame_qp);
         mpp_meta_get_s32(meta, KEY_ENC_BASE_LAYER_PID, &base_layer_pid);
+        mpp_meta_get_s32(meta, KEY_TEMPORAL_ID, &force_tid);
 
         if (force_lt_idx >= 0) {
             frm_cfg->force_flag |= ENC_FORCE_LT_REF_IDX;
@@ -726,6 +749,11 @@ static MPP_RET h264e_start(void *ctx, HalEncTask *task)
             frm_cfg->force_flag |= ENC_FORCE_REF_MODE;
             frm_cfg->force_ref_mode = REF_TO_LT_REF_IDX;
             frm_cfg->force_ref_arg = force_use_lt_idx;
+        }
+
+        if (force_tid >= 0) {
+            frm_cfg->force_flag |= ENC_FORCE_TEMPORAL_ID;
+            frm_cfg->force_temporal_id = force_tid;
         }
 
         if (force_frame_qp >= 0) {
@@ -747,6 +775,41 @@ static MPP_RET h264e_start(void *ctx, HalEncTask *task)
     h264e_dbg_func("leave\n");
 
     return MPP_OK;
+}
+
+MPP_RET h264e_pskip_ref_check(H264eDpb *dpb, H264eFrmInfo *frms)
+{
+    H264eDpbFrm *curr = NULL;
+    H264eDpbFrm *refr = NULL;
+    RK_U32 i;
+    MPP_RET ret = MPP_OK;
+
+    curr = dpb->curr;
+    refr = dpb->refr;
+
+    if (curr->status.force_pskip_is_ref) {
+        H264eDpbFrm *temp_frm;
+        for (i = 0; i < H264E_MAX_REFS_CNT; i++) {
+            temp_frm = &dpb->frames[i];
+            if (temp_frm->slot_idx != frms->refr_idx) {
+                temp_frm->as_pskip_ref = 0;
+            } else {
+                temp_frm->as_pskip_ref = 1;
+            }
+        }
+    }
+
+    if (!refr->status.force_pskip_is_ref && !curr->status.force_pskip_is_ref) {
+        H264eDpbFrm *temp_frm;
+        for (i = 0; i < H264E_MAX_REFS_CNT; i++) {
+            temp_frm = &dpb->frames[i];
+            if (temp_frm) {
+                temp_frm->as_pskip_ref = 0;
+            }
+        }
+    }
+
+    return ret;
 }
 
 static MPP_RET h264e_proc_dpb(void *ctx, HalEncTask *task)
@@ -776,13 +839,16 @@ static MPP_RET h264e_proc_dpb(void *ctx, HalEncTask *task)
     frms->curr_idx = curr->slot_idx;
 
     if (refr) {
-        if (refr->status.force_pskip)
-            frms->refr_idx = p->pre_ref_idx;
+        if (refr->status.force_pskip_is_ref)
+            frms->refr_idx = refr->prev_ref_idx;
         else
             frms->refr_idx = refr->slot_idx;
     } else {
         frms->refr_idx = curr->slot_idx;
     }
+
+    // mark actual refs buf when force pskip is ref
+    h264e_pskip_ref_check(dpb, frms);
 
     for (i = 0; i < (RK_S32)MPP_ARRAY_ELEMS(frms->usage); i++)
         frms->usage[i] = dpb->frames[i].on_used;
@@ -894,10 +960,11 @@ static MPP_RET h264e_sw_enc(void *ctx, HalEncTask *task)
 
     task->length += final_len;
 
-    rc_info->bit_real = task->length;
+    rc_info->bit_real = task->length * 8;
     rc_info->quality_real = rc_info->quality_target;
-    p->pre_ref_idx = p->frms.refr_idx;
+    p->dpb.curr->prev_ref_idx = p->frms.refr_idx;
     mpp_packet_add_segment_info(packet, H264_NALU_TYPE_SLICE, length, final_len);
+    mpp_buffer_sync_partial_end(mpp_packet_get_buffer(packet), length, final_len);
 
     return MPP_OK;
 }

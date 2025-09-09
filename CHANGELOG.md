@@ -1,3 +1,375 @@
+## 1.0.11 (2025-09-09)
+### Feature
+- [mpp]: Add jpeg roi function for RV1126B
+- [kmpp]: Add jpeg roi function for kmpp
+- [kmpp]: Set chan_fd to init cfg
+- [kmpp]: Replace frame_infos with kmpp_frame
+- [kmpp_frame]: Add self_meta in kmpp_frame
+- [kmpp_buffer]: Add ioctl to inc ref and flush
+- [mpp_meta]: Add more frame buffer key to meta
+- [base]: Add toml function
+- [base]: Use enc cfg obj
+- [smart_v3]: Add new frame qp interface
+- [kmpp]: Add KmppMeta module
+- [kmpp]: Add KmppBuffer module
+- [kmpp_obj]: Add priv prop support for objdef
+
+### Fix
+- [h265e]: Remove unused buffer
+- [mpp]: Add null check for sync pkt buffer
+- [mpp_meta]: Add user data deep copy support
+- [mpp_meta]: Add KEY_NPU_UOBJ_FLAG and KEY_NPU_SOBJ_FLAG
+- [kmpp_obj]: Fix obj ioctl typo
+- [mpp_trie]: Fix get err node issue
+- [vdpp] Fix building tests against musl libc
+- [script]: Prepend bash with /usr/bin/env
+- [kmpp_buffer]: Close fd when deinit
+- [mpp_thread]: Fix thread name is not set
+- Rename FFmpeg to FF for sdk release request
+- [kmpp_obj]: Fix kmpp obj get by sptr
+- [h265d]: Ensure the DTS is transmitted to the frame
+- [kmpp_obj]: Rename kmpp_obj_impl_put func
+- [kmpp_obj]: Fix kmpp frm/pkt self meta erro
+- [h264e_api_v2]: Fix bit_real calc in skip mode
+- [h264d]: Fix fast play mode not working in shell environment.
+- [kmpp_frame]: Remove unnecessary logs
+- [enc_test]: Set input block mode in init kcfg
+- [hal_h265e]: Fix nal type in tsvc mode
+- [h265d]: Fix log issue
+- [vepu511]: Add tune stat update
+- [kmpp_obj]: Update tbl after objdef registration
+- [mpp_cfg_io]: Add more mpp_cfg_io function
+- [kmpp_obj]: Fix grp_cfg and buf_cfg leak in kmpp_obj_test
+- [vproc]: Fix unit tests cannot be disabled
+
+### Docs
+- Update 1.0.11 CHANGELOG.md
+
+### Refactor
+- [sys_cfg]: Refactor C++ sys_cfg to C
+- [test]: Refactor C++ test file to C
+- [osal]: Refactor C++ osal file to C
+- [rc]: Refactor C++ rc/rc_base to C
+- [enc]: Use KmppShmPtr to represent osd buffer
+- [kmpp]: Fix kmpp obj compilation warning
+- [rc_api]: Refactor C++ rc_api to C
+
+### Test
+- [mpi_enc_test]: Add jpeg roi test
+
+### Chore
+- [mpp_singleton]: Update name print
+- [hal]: Organize the relevant processes for vepu fmt
+- Rename Dolby for sdk release requirement
+- [kmpp_meta]: Disable failure log
+- [mpp_enc_cfg]: Add base:smart_en option
+- [kmpp_obj]: Add is_kobj query function
+- [rc_smt]: Adjust code style for rc_smt
+
+## 1.0.10 (2025-06-23)
+### Feature
+- [mpp_log]: Add long log (llog) function
+- [mpp_buffer]: Add mpp_buffer discard function
+- [build]: add Android.bp support
+- [kmpp_packet]: Add kmpp_packet interface
+- [mpp_log]: Add external callback support
+- [kmpp_obj]: Refactor kmpp_obj helper
+- [kmpp_obj]: Add more kmpp_obj property
+- [kmpp_obj]: Add object update function
+- [kmpp_obj]: Add userspace objdef functions
+- [osal]: Add mpp_singleton module
+- [mpp_cfg_io]: Add mpp cfg io module
+- [kmpp]: Add kmpp_frame_test
+
+### Fix
+- [h265d]: Fix yuv400 decode error
+- [h265d]: Fix GDR stream decoding
+- [kmpp_obj]: Undef KMPP_OBJ_SGLN_ID macro
+- [osal]: Fix timeout expire too soon issue
+- [cmake]: Fix static build issue
+- [vp8e]: Remove unused vp8e_rc file
+- [h265d_rkv]: Fix dec err after cut streams
+- [mpp_singleton]: fix init order issue
+- [mpp_dec]: Fix compile warning
+- [h265d_parser]: Fix slice header parse
+- [mpp_sys_cfg]: afbc calc support yuv444sp_10bit
+- [kmpp_obj]: Update helper macro
+- [h263d]: Fix missing initializer for field problem
+- [enc_utils]: Remove duplicate option
+- [kmpp_obj]: Remove extra print in helper
+- [avsd_plus]: Fix page fault when filtering field data
+- [h265d_vdpu384a]: Fix CABAC error detection issue.
+- [mpp_sys_cfg]: Fix stride issue on resolution change
+- [vepu_540c]: Reduce print hw_status when irq ret
+- [mpp_sys_cfg]: Fix ver_stride calc issue
+- [sys_cfg]: Fix ver stride calculation issue.
+- [vepu541]: Add warning for unsupport nv21/nv42
+- [avs2d]: fix vertical stride config
+- Revert "fix[mpp_enc_impl]: fix rc cfg for jpeg enc"
+- [h265d_ps]: Suppress YUV444 unsupported warning logs
+- [mpp_cfg]: Fix function define on C++ field
+- [h264e_dpb]: fix walk_len when refs_dryrun
+- [av1d_vdpu383]: fix segid page fault issue
+- [allocator]: Fix misc buffer group flag issue
+- [h265d_parser]: fix startcode finder for 00 00 00 xx case
+- [kmpp]: Fix eos frame with NULL buffer issue
+- [utils]: Remove duplicate assignments
+- [mpi_enc_test]: Sync mdc config of RV1126B
+- [sys_cfg]: Avoid frequent environment variable access.
+- [mpp_enc]: Add avc rc parameter set
+- [h265d_vdpu383]: Fix CABAC error detection issue.
+- [mpi]: Fix typo
+- [h264_vdpu384a]: Fix error proc issue
+- [h265e]: Correct tile syntax elements at PPS
+- [mpp]: Add atf set, atf value 0~3
+- [mpp_enc_cfg]: Add lambda_idx_i and lambda_idx_p
+- [mpp_enc]: Add encoder speed mode setup
+- [test]: Add qbias_arr and aq_rnge_arr init
+- [packet]: fix packet partition and eoi logic
+- [mpp]: add qpmap_en and enc_spd
+- [cmake]: Fix double object include issue
+- [sys_cfg]: Align to CTU64 to avoid info change.
+- [mpp]: Fix compile warning with ipc sdk toolchain
+
+### Docs
+- Update 1.0.10 CHANGELOG.md
+
+### Refactor
+- [base]: Refactor C++ mpp_enc_cfg to C
+- [base]: Refactor C++ mpp_meta to C
+- [base]: Refactor C++ mpp_packet to C
+- [base]: Refactor C++ mpp_frame to C
+- [base]: Refactor C++ mpp_buffer to C
+- [mpp_mem_pool]: Add exit leak pool print
+- [osal]: Refactor C++ mpp_server to C
+- [osal]: Refactor more module from C++ to C
+- [mpp_trace]: Refactor C++ mpp_trace to C
+- [mpp_runtime]: Refactor C++ mpp_runtime to C
+- [mpp_soc]: Refactor C++ mpp_soc to C
+- [mpp_platform]: Refactor C++ mpp_platform to C
+- [mem_pool]: Refactor C++ mem_pool to C
+- [mpp_mem]: Refactor C++ mpp_mem to C
+- [kmpp]: Replace venc_packet with KmppPacket
+- [osal/linux/os_log]: Use C constructor.
+- [base]: Remove MppDecCfgImpl
+- [base]: Refactor mpp_trie from C++ to C
+- [mpp_cfg_io]: Change cfg to trie interface
+
+### Test
+- [osal]: Add libc and OS compatibility checking
+- [resolution]: Add resolution test tool
+
+### Chore
+- [kmpp]: Modify kmpp_objs init / deinit order
+- [kmpp_obj]: Add from objs device macro
+- [kmpp_obj]: Add more obj function
+- [kmpp_obj]: Update flag calculation macro
+- [utils]: Add fbc frame data dump
+- A fix for company release requirement
+- [kmpp]: Remove get packet failed log
+
+## 1.0.9 (2025-04-03)
+### Feature
+- [kmpp_frame]: Add KmppFrame module
+- [vepu_511]: Add rv1126b 265e/264e/jpge support
+- [mpp_meta]: Add osd_data3 fmt for 1103b/1126b
+- [kmpp_obj]: Sync to new KmppEntry share object
+- [err_proc]: Add a new command: DIS_ERR_CLR_MARK
+- [mpi_enc_test]: Support enc for kmpp flow
+- [kmpp_obj]: Add more kmpp_obj functions
+- [vdpu384a]: Support RV1126B new features
+- [mpp_soc]: Support rv1126b soc
+- [kmpp_obj]: Sync to new kmpp_meta
+- [kmpp_obj]: Sync to loctbl without flag_type
+- [mpp_buf_slot]: buf_slot add coded width alignment config
+- [h265d]: Add vdpu383 hevc yuv444_10bit support
+- [vproc]: Add more log for debugging
+- [mpp]: Support kmpp access
+- [kmpp]: Add kmpp module
+- [rk_mpi_cmd]: Merge cmds from mpp_interface
+- [build]: Add --toolchain to config toolchain for linux
+- [mpp_meta]: Use trie to index the meta key
+- [mpp_packet]: Add realease callback info
+- [kmpp_obj]: Update to new objdef query mode
+- [mpp_trie]: Allow empty name trie for import
+- [enc]: Support setting temporal_id
+- [mpp_enc_cfg]: Merge enc cfgs from mpp_interface
+- [mpp_sys_cfg_st]: Provide packaging for use on products
+- [mpp_sys_cfg]: Add raster/tile/fbc buffer alignment
+- [mpp_sys_cfg]: Support sys_cfg buffer alignment
+- [kmpp_obj]: Add kmpp_obj_get_hnd func
+- [mpp_venc_kcfg]: Add mpp_venc_kcfg module
+
+### Fix
+- [sys_cfg]: Add debug info
+- [sys_cfg]: fix fbc ver stride calc issue
+- [sys_cfg]: Fix external configuration stride issue
+- [sys_cfg]: Support alignment for mpeg2/mpeg4/h263/vp8.
+- [sys_cfg]: AVC is aligned to ctu to avoid info change
+- [sys_cfg]: Fix RK3399 hor/ver stride calculation issue.
+- [sys_cfg]: Fix HAL layer buffer alignment issue
+- [h264d]: Recovery only takes effect when no IDR frames present
+- [hal_jpege_api]: Fix jpege api path judgment
+- [vdpp]: Fix vdpp blk_size calculation.
+- [mpp_venc_kcfg]: Revert to mpp interface
+- [cmake]: Fix kmpp_base symbol missing
+- [av1_syntax]: Fix array out-of-bounds issue.
+- [build]: fix build failure with CMake 4.0
+- [vepu_511]: Speed grade configuration of 0.67
+- [mpp_frame]: Add rk_fbc fmt for 1126b
+- [jpegd_rkv]: New JPEG IP supports tile 4x4 output by default.
+- [jpeg_rkv]: New JPEG IP defaults to no RGB support.
+- [hal_rcb]: Fix rcb buf size calc issue
+- [kmpp_obj]: Fix rockit compile error
+- [avsd]: Skip redundant zeros between fields inside one picture
+- [av1]: parameter is 16 bits
+- [base]: Fix strncpy compile warning
+- [hal_h265e_vepu580]: Fix overflow status check
+- [kmpp]: Fix channel dup issue
+- [os_log]: Modify default log option for linux
+- [kmpp_obj]: Fix warning on arm32
+- [kmpp]: Set KEY_OUTPUT_INTRA meta to packet
+- [sys_cfg]: Align rk3399 h_stride to an odd multiple of 265.
+- [mpp_sys]: Fix old IP vertical alignment to 16 issue
+- [kmpp_obj]: Disable /dev/kmpp_objs not found log
+- [mpp_soc]: Fix cap_fbc for rv1126b
+- [sys_cfg]: Optimize comparison information printing.
+- [sys_cfg]: Print comparison information only once.
+- [mpp_meta]: Fix compile error
+- [vepu510]: Mark frame first part when split slice out
+- [hdr_meta]: Fix hdr format for av1
+- [mpp_sys_cfg]: Fix align pixel stride on rk3576
+- [vproc]: fix height out of boundary problem
+- [mpp_sys_cfg]: Fix abnormal stride calculation.
+- [h264d]: disable ref erorr when decode recovery frame period
+- [jpege_vpu720]: Correct encoded size config
+- [buf_slot]: Correct coding mistakes.
+- [build]: Avoid exporting toolchain to system PATH
+- [mpp_enc]: Fix some exceptions when force pskip
+- [kmpp]: Fill pts/dts/flag to MppPacket
+- [vproc]: fix frame output disorder problem
+- [vproc]: Fix field disordered problem
+- [mpp_enc_cfg]: Remove a redundant atr_str
+- []: Fix abnormal FBC info issue in Info Change
+- [h264d]: Fix segment fault problem
+- [vproc]: Fix error info missed problem
+- [vproc]: Fix output blank buffer problem
+- [fbc]: Fix RK3588 av1 FBC usage issue
+- [sys_cfg/buf_slot]: support yuv422sp 10bit
+- [mpp_enc_cfg]: Add sao_bit_ratio from mpp_interface
+- [buf_slot]: Correct coding mistakes.
+- [mpp_venc_kcfg]: Get objdef at runtime
+- [jpegd]: Avoid buffer overrun
+- [sys_cfg/buf_slot]: fix fbc yuv444sp buf calculation issue
+- [kmpp_obj]: Add extern C
+
+### Docs
+- Update 1.0.9 CHANGELOG.md
+
+### Refactor
+- [kmpp]: Move kmpp to seperate directory
+- [mpp_trie]: Replace root import
+- [mpp_enc_cfg]: Adjust cu_qp_delta_depth
+
+### Chore
+- [mpp_buf_slot]: Modify sys_cfg mismatch print
+
+## 1.0.8 (2024-12-30)
+### Feature
+- [enc]: Add switch for disable IDR encoding when FPS changed.
+- [test]: Add PSNR info for video encoder
+- [mpp_buf_slots]: Add coding attribute to buf slots
+- [mpp_sys_cfg]: Add mpp_sys_cfg function
+- [dec_nt_test]: Support jpeg decoding on decode
+- [mpp_dec]: Add jpeg put/get decode support
+- [mpp_obj]: Add mpp_obj for kernel object
+- [mpp_trie]: Add functions for import / export
+- [rk_type.h]: Add kernel driver compat define
+- [mpp_dec]: add control for select codec device
+- [mpp_dec]: support hdr10plus dynamic metadata parse
+- [hal_avsd]: enable hw dec timeout
+- [vpu_api]: Support configuration to disable decoding errors
+- [enc]: Support use frame meta to cfg pskip
+- [vepu510]: Add scaling list regs setup
+
+### Fix
+- [enc]: Fix CPB size not enough problem
+- [m4v_parser]: Fix split_parse setting failure issue
+- [mpp_trie]: Remove a redundant variables from log
+- [mpp_enc]: Set frm type in pkt meta
+- [mpp_sys_cfg]: Fix compile warning
+- [rc_smt]: Fix the variable overflow issue
+- [h264e_sps]: fix constraint_set3_flag flag issue
+- [vpu_legacy]: Fix vpu fbc configuration issue
+- [mpp_buffer]: Fix buffer put log
+- [mpp_mem_pool]: Record pool buffer allocator caller
+- [mpp]: Fix input_task_count for async enc
+- [av1d]: Fix uninitialized fbc_hdr_stride issue
+- [cfg]: fix cfg test segment fault problem
+- [drm]: Call drop master by default
+- [vepu580]: fix is_yuv/is_fbc typo
+- [misc]: Fix compile on 32bit platform
+- [jpegd]: replace packet size with stream length
+- [av1_vdpu383]: Fix the CDF issue between GOPs
+- [mpp_enc_impl]: fix rc cfg for jpeg enc
+- [av1_vdpu383]: fix cdf usage issue
+- [hal_h265d]: Avoid reg offset duplicate setting issue
+- [vepu580]: fix incorrect color range problem
+- [buf_slots]: Fix the issue of fmt conv during info change
+- [h264d]: force reset matrix coefficients when parse unknown value
+- [h264d]: Parse hdr parameters on enable_hdr_meta enabled
+- [h264d_parser]: Fix pps parsing issue
+- [hal_vdpu383]: fix fbc hor_stride mismatch issue
+- [hal_vepu580]: re-get roi buf when resolution switch
+- [hal_vepu541]: re-get roi buf when resolution switch
+- [iep2]: Remove unnessary log on init failed
+- [h264_dpb]: Add env variables to force fast play mode
+- [h265e_slice]: fix compilation warning
+- [hal_avs2d_vdpu383]: handle scene reference frame
+- [debain]: fix typo in compat version
+- [debian]: Update debian control
+- [debain]: Update debian/control
+- [debain]: Update compat to 10
+- [h264e_pps]: add pic_scaling_matrix_present check
+- [h2645d_sei]: fix read byte overflow error
+- [m2vd]: Fix refer frame error on beginning
+- [vdpu383]: fix err detection mask issue
+- [test]: Fix AQ table error
+- [vepu580]: Add md info internal buffer
+- [vepu580]: Add ATF weight adjust switch for H.265
+- [tune]: Replace qpmap_en with deblur_en
+- [vepu580]: Adjust frame-level QP for VI frame
+- [hal_jpegd]: fix huffman table selection
+- [h265]: fix pskip when enable tile mode
+- [smt_rc]: Fix first frame QP error
+- [h264d]: fix no output for mvc stream
+- [vepu580]: Fix motion level assignment error
+- [avsd]: Fix attach dev error issue
+- [h265d]: Fix conformance window offsets for chroma formats
+- [test]: Fix mdinfo size according to soc type
+- [h265d_vdpu383]: fix dec err when ps_update_flag=0
+- [vepu510]: Sync code from enc_tune branch
+- [mpp_cfg]: Fix compile warning
+- [h265d]: fix output err causeby refs cleard
+- [h264d]: remove error check for B frame has only one ref
+- [test]: Fix test demo stuck issue
+
+### Docs
+- Update 1.0.8 CHANGELOG.md
+- update doc for fast play
+
+### Refactor
+- [hal]: Update the reg offset setting method.
+- [mpi]: Add ops name when assign for reading friendly
+- [av1d_vdpu383]: Regs definition sync with other protocols.
+- [vproc]: Refactor iep2 progress
+- [h265]: unify calculation tile width
+
+### Chore
+- [hal_jpegd]: Remove reset / flush functions
+- [test]: Use put/get in mpi_dec_test for jpeg
+- [MppPacket]: Add caller log on check failure
+
 ## 1.0.7 (2024-09-04)
 ### Feature
 - [rc_smt]: Add rc container for smart mode

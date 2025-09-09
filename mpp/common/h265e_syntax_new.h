@@ -210,7 +210,6 @@ typedef struct UserDatas_t {
 
 typedef struct H265eSyntax_new_t {
     RK_S32          idr_request;
-    RK_S32          pre_ref_idx;
     H265ePicParams  pp;
     H265eSlicParams sp;
     void            *dpb;
@@ -221,6 +220,7 @@ extern "C" {
 #endif
 
 RK_S32 h265e_syntax_fill(void *ctx);
+RK_S32 h265e_get_nal_type(H265eSlicParams* sp, RK_S32 frame_type);
 
 #ifdef __cplusplus
 }

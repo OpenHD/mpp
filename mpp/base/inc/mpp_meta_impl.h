@@ -21,11 +21,7 @@
 
 #include "mpp_list.h"
 #include "mpp_meta.h"
-
-typedef struct MppMetaDef_t {
-    MppMetaKey          key;
-    MppMetaType         type;
-} MppMetaDef;
+#include "rk_venc_cmd.h"
 
 typedef struct MppMetaVal_t {
     RK_U32              state;
@@ -36,6 +32,7 @@ typedef struct MppMetaVal_t {
         MppFrame        frame;
         MppPacket       packet;
         MppBuffer       buffer;
+        RK_U64          val_kptr;   /* kernel object userspace address */
     };
 } MppMetaVal;
 
@@ -47,6 +44,9 @@ typedef struct MppMetaImpl_t {
 
     struct list_head    list_meta;
     RK_S32              node_count;
+    MppEncUserData      user_data;
+    MppEncUserDataSet   user_data_set;
+    RK_U32              datas_buf_size;
     MppMetaVal          vals[];
 } MppMetaImpl;
 

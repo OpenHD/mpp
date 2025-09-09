@@ -23,6 +23,8 @@
 #include "mpp_dec.h"
 #include "mpp_enc.h"
 #include "mpp_impl.h"
+#include "kmpp_obj.h"
+#include "kmpp.h"
 
 #define MPP_DBG_FUNCTION                    (0x00000001)
 #define MPP_DBG_PACKET                      (0x00000002)
@@ -133,10 +135,10 @@ public:
     MPP_RET notify(RK_U32 flag);
     MPP_RET notify(MppBufferGroup group);
 
-    mpp_list        *mPktIn;
-    mpp_list        *mPktOut;
-    mpp_list        *mFrmIn;
-    mpp_list        *mFrmOut;
+    MppList        *mPktIn;
+    MppList        *mPktOut;
+    MppList        *mFrmIn;
+    MppList        *mFrmOut;
     /* counters for debug */
     RK_U32          mPacketPutCount;
     RK_U32          mPacketGetCount;
@@ -178,6 +180,8 @@ public:
     MppPort         mMppOutPort;
     MppTaskQueue    mInputTaskQueue;
     MppTaskQueue    mOutputTaskQueue;
+    RK_S32          mInputTaskCount;
+    RK_S32          mOutputTaskCount;
 
     MppPollType     mInputTimeout;
     MppPollType     mOutputTimeout;
@@ -197,6 +201,9 @@ public:
     /* dump info for debug */
     MppDump         mDump;
 
+    /* kmpp infos */
+    Kmpp            *mKmpp;
+    KmppObj         mVencInitKcfg;
 private:
     void clear();
 
@@ -208,7 +215,7 @@ private:
     RK_U32          mStatus;
 
     /* decoder paramter before init */
-    MppDecCfgSet    mDecInitcfg;
+    MppDecCfg       mDecCfg;
     RK_U32          mParserFastMode;
     RK_U32          mParserNeedSplit;
     RK_U32          mParserInternalPts;     /* for MPEG2/MPEG4 */

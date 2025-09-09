@@ -40,6 +40,7 @@
 #include "hal_h264d_vdpu34x.h"
 #include "hal_h264d_vdpu382.h"
 #include "hal_h264d_vdpu383.h"
+#include "hal_h264d_vdpu384a.h"
 #include "hal_h264d_vdpu2.h"
 #include "hal_h264d_vdpu1.h"
 
@@ -260,7 +261,7 @@ MPP_RET hal_h264d_init(void *hal, MppHalCfg *cfg)
             mpp_err_f("can not found H.264 decoder hardware on platform %x\n", vcodec_type);
             return ret;
         }
-        mpp_env_get_u32("use_mpp_mode", &mode, MODE_NULL);
+        mpp_env_get_u32("use_mpp_mode", &mode, cfg->cfg->base.codec_mode);
         if (MODE_NULL == mode) {
             MppDecBaseCfg *base = &cfg->cfg->base;
 
@@ -296,6 +297,9 @@ MPP_RET hal_h264d_init(void *hal, MppHalCfg *cfg)
         switch (hw_id) {
         case HWID_VDPU383 : {
             p_hal->hal_api = &hal_h264d_vdpu383;
+        } break;
+        case HWID_VDPU384A : {
+            p_hal->hal_api = &hal_h264d_vdpu384a;
         } break;
         case HWID_VDPU382_RK3528 :
         case HWID_VDPU382_RK3562 : {
