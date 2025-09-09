@@ -5,8 +5,9 @@
  * This example captures NV12 frames either from a V4L2 camera or from a raw
  * NV12 file in "test" mode.  Frames are encoded using Rockchip MPP as either
  * H.264 or H.265 and streamed over UDP.  Runtime options expose bitrate, codec
- * type, GOP size, ROI region and intra refresh configuration.  The application
- * writes detailed bitrate statistics for every encoded frame to a log file.
+ * type, GOP size, ROI region and intra refresh configuration.  Camera frames
+ * are passed to MPP via DMABUF to minimize latency.  The application writes
+ * detailed bitrate statistics for every encoded frame to a log file.
  *
  * The code is intentionally verbose and prints debug information for almost
  * every operation to aid experimentation and troubleshooting.
@@ -36,6 +37,7 @@
 extern "C" {
 #include "rk_mpi.h"
 #include "rk_venc_cmd.h"
+#include "mpp_buffer.h"
 }
 
 #define MAX_BUFFERS 4
@@ -45,8 +47,8 @@ extern "C" {
             ##__VA_ARGS__)
 
 struct V4L2Buffer {
-    int fd;
-    void *start;
+    int fd;       // exported DMA buffer fd
+    void *start;  // mmap'd address for debug access
     size_t length;
 };
 
@@ -194,7 +196,7 @@ static int v4l2_setup(const AppCfg &cfg, std::vector<V4L2Buffer> &bufs) {
     memset(&req, 0, sizeof(req));
     req.count = MAX_BUFFERS;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    req.memory = V4L2_MEMORY_MMAP; // TODO: use DMABUF for lower latency
+    req.memory = V4L2_MEMORY_MMAP;
     if (ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
         perror("VIDIOC_REQBUFS");
         close(fd);
@@ -222,12 +224,25 @@ static int v4l2_setup(const AppCfg &cfg, std::vector<V4L2Buffer> &bufs) {
             close(fd);
             return -1;
         }
+
+        struct v4l2_exportbuffer exp;
+        memset(&exp, 0, sizeof(exp));
+        exp.type = req.type;
+        exp.index = i;
+        exp.flags = O_CLOEXEC;
+        if (ioctl(fd, VIDIOC_EXPBUF, &exp) < 0) {
+            perror("VIDIOC_EXPBUF");
+            close(fd);
+            return -1;
+        }
+        bufs[i].fd = exp.fd;
+
         if (ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
             perror("VIDIOC_QBUF");
             close(fd);
             return -1;
         }
-        DBG("Queued buffer %u", i);
+        DBG("Queued buffer %u fd %d", i, bufs[i].fd);
     }
 
     enum v4l2_buf_type type = (enum v4l2_buf_type)req.type;
@@ -238,7 +253,8 @@ static int v4l2_setup(const AppCfg &cfg, std::vector<V4L2Buffer> &bufs) {
 }
 
 static MPP_RET mpp_setup(const AppCfg &cfg, MppCtx &ctx, MppApi *&mpi,
-                         MppBuffer &frm_buf, size_t frame_size) {
+                         MppBuffer &frm_buf, size_t frame_size,
+                         bool need_frame_buf) {
     MPP_RET ret = mpp_create(&ctx, &mpi);
     if (ret) return ret;
     DBG("MPP context created");
@@ -247,9 +263,11 @@ static MPP_RET mpp_setup(const AppCfg &cfg, MppCtx &ctx, MppApi *&mpi,
     if (ret) return ret;
     DBG("MPP encoder init done");
 
-    ret = mpp_buffer_get(NULL, &frm_buf, frame_size);
-    if (ret) return ret;
-    DBG("Allocated frame buffer size %zu", frame_size);
+    if (need_frame_buf) {
+        ret = mpp_buffer_get(NULL, &frm_buf, frame_size);
+        if (ret) return ret;
+        DBG("Allocated frame buffer size %zu", frame_size);
+    }
 
     MppEncCfg enc_cfg = NULL;
     ret = mpp_enc_cfg_init(&enc_cfg);
@@ -320,7 +338,8 @@ int main(int argc, char **argv) {
     MppCtx ctx = NULL;
     MppApi *mpi = NULL;
     MppBuffer frm_buf = NULL;
-    if (mpp_setup(cfg, ctx, mpi, frm_buf, frame_size)) {
+    bool use_file = !cfg.input_file.empty();
+    if (mpp_setup(cfg, ctx, mpi, frm_buf, frame_size, use_file)) {
         fprintf(stderr, "mpp setup failed\n");
         return -1;
     }
@@ -332,6 +351,7 @@ int main(int argc, char **argv) {
     RK_S32 frame_id = 0;
 
     while (1) {
+        MppBuffer use_buf = NULL;
         if (input_fp) {
             size_t read = fread(mpp_buffer_get_ptr(frm_buf), 1, frame_size, input_fp);
             if (read < frame_size) {
@@ -339,6 +359,7 @@ int main(int argc, char **argv) {
                 break;
             }
             DBG("Read frame %d from file", frame_id);
+            use_buf = frm_buf;
         } else {
             struct v4l2_buffer buf;
             memset(&buf, 0, sizeof(buf));
@@ -352,18 +373,29 @@ int main(int argc, char **argv) {
                 perror("VIDIOC_DQBUF");
                 break;
             }
-            memcpy(mpp_buffer_get_ptr(frm_buf), v4l2_bufs[buf.index].start,
-                   buf.bytesused);
             DBG("Captured frame %d from buffer %u", frame_id, buf.index);
+
+            MppBufferInfo info;
+            memset(&info, 0, sizeof(info));
+            info.type = MPP_BUFFER_TYPE_DRM;
+            info.fd = v4l2_bufs[buf.index].fd;
+            info.size = buf.bytesused;
+            if (mpp_buffer_import(&use_buf, &info)) {
+                fprintf(stderr, "mpp_buffer_import failed\n");
+                ioctl(v4l2_fd, VIDIOC_QBUF, &buf);
+                break;
+            }
+
             if (ioctl(v4l2_fd, VIDIOC_QBUF, &buf) < 0) {
                 perror("VIDIOC_QBUF");
+                mpp_buffer_put(use_buf);
                 break;
             }
         }
 
         MppFrame frame = NULL;
         mpp_frame_init(&frame);
-        mpp_frame_set_buffer(frame, frm_buf);
+        mpp_frame_set_buffer(frame, use_buf);
         mpp_frame_set_width(frame, cfg.width);
         mpp_frame_set_height(frame, cfg.height);
         mpp_frame_set_hor_stride(frame, cfg.width);
@@ -393,6 +425,9 @@ int main(int argc, char **argv) {
             mpp_packet_deinit(&packet);
         }
 
+        if (!input_fp && use_buf)
+            mpp_buffer_put(use_buf);
+
         frame_id++;
         if (input_fp)
             usleep(1000000 / cfg.fps);
@@ -402,7 +437,8 @@ int main(int argc, char **argv) {
         fclose(log);
 
     close(sock);
-    mpp_buffer_put(frm_buf);
+    if (frm_buf)
+        mpp_buffer_put(frm_buf);
     if (mpi && ctx)
         mpi->reset(ctx);
     if (ctx)
@@ -413,8 +449,10 @@ int main(int argc, char **argv) {
     else if (v4l2_fd >= 0) {
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         ioctl(v4l2_fd, VIDIOC_STREAMOFF, &type);
-        for (size_t i = 0; i < v4l2_bufs.size(); ++i)
+        for (size_t i = 0; i < v4l2_bufs.size(); ++i) {
             munmap(v4l2_bufs[i].start, v4l2_bufs[i].length);
+            close(v4l2_bufs[i].fd);
+        }
         close(v4l2_fd);
     }
 
