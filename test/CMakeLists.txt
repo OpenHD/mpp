@@ -48,6 +48,9 @@ add_mpp_test(mpi_rc2 c)
 # new dec multi unit test
 add_mpp_test(mpi_dec_multi c)
 
+# simple v4l2 to udp encoder test
+add_mpp_test(mpi_v4l2_udp cpp)
+
 macro(add_legacy_test module)
     set(test_name ${module}_test)
     string(TOUPPER ${test_name} test_tag)
