@@ -3,6 +3,9 @@
 # mpp built-in unit test case
 # ----------------------------------------------------------------------------
 # macro for adding mpp sub-module unit test
+find_package(PkgConfig)
+pkg_check_modules(DRM QUIET libdrm)
+
 macro(add_mpp_test module ext)
     set(test_name ${module}_test)
     set(file_name ${test_name}.${ext})
@@ -14,14 +17,21 @@ macro(add_mpp_test module ext)
     option(${test_tag} "Build mpp ${module}.${ext} unit test" ${BUILD_TEST})
     if(${test_tag})
         add_executable(${test_name} ${file_name} mpp_event_trigger.c mpp_parse_cfg.c)
-        target_link_libraries(${test_name} ${MPP_SHARED} utils drm)
+        if(DRM_FOUND)
+            target_include_directories(${test_name} PRIVATE ${DRM_INCLUDE_DIRS})
+            target_link_libraries(${test_name} ${MPP_SHARED} utils ${DRM_LIBRARIES})
+        else()
+            target_link_libraries(${test_name} ${MPP_SHARED} utils)
+        endif()
         set_target_properties(${test_name} PROPERTIES FOLDER "test")
         install(TARGETS ${test_name} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
         #add_test(NAME ${test_name} COMMAND ${test_name})
     endif()
 endmacro()
 
+if(DRM_FOUND)
 add_mpp_test(openhd_vid c)
+endif()
 
 
 # mpp info test
