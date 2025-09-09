@@ -1,2 +1,3 @@
 #! /usr/bin/dh-exec
+# install all demo binaries, including mpi_v4l2_udp_test
 usr/bin/*

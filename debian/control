@@ -28,3 +28,6 @@ Package: rockchip-mpp-demos
 Architecture: any
 Depends: librockchip-mpp1 (= ${binary:Version}), librockchip-vpu0 (= ${binary:Version}), ${misc:Depends}
 Description: Media Process Platform Demos
+ This package provides sample applications for the Rockchip Media
+ Process Platform, including the mpi_v4l2_udp_test encoder demo that
+ streams H.264/H.265 video over UDP.
