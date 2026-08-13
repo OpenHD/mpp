@@ -635,14 +635,20 @@ static MPP_RET h264e_proc_cfg(void *ctx, MpiCmd cmd, void *param)
 
         // TODO: rc cfg shouldn't be done here
         if (cfg->rc.refresh_en) {
-            RK_U32 mb_rows;
+            RK_U32 refresh_units;
 
             if (MPP_ENC_RC_INTRA_REFRESH_ROW == cfg->rc.refresh_mode)
-                mb_rows = MPP_ALIGN(cfg->prep.height, 16) / 16;
+                refresh_units = MPP_ALIGN(cfg->prep.height, 16) / 16;
+            else if (MPP_ENC_RC_INTRA_REFRESH_COL == cfg->rc.refresh_mode)
+                refresh_units = MPP_ALIGN(cfg->prep.width, 16) / 16;
+            else if (MPP_ENC_RC_INTRA_REFRESH_BLOCK == cfg->rc.refresh_mode)
+                refresh_units = (MPP_ALIGN(cfg->prep.width, 16) / 16) *
+                                (MPP_ALIGN(cfg->prep.height, 16) / 16);
             else
-                mb_rows = MPP_ALIGN(cfg->prep.width, 16) / 16;
+                refresh_units = 0;
 
-            cfg->rc.refresh_length = (mb_rows + cfg->rc.refresh_num - 1) / cfg->rc.refresh_num;
+            cfg->rc.refresh_length = refresh_units ?
+                (refresh_units + cfg->rc.refresh_num - 1) / cfg->rc.refresh_num : 0;
             if (cfg->rc.gop < cfg->rc.refresh_length)
                 cfg->rc.refresh_length = cfg->rc.gop;
         }

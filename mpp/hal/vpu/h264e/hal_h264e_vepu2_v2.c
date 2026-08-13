@@ -296,7 +296,7 @@ static MPP_RET setup_intra_refresh(HalH264eVepu2Ctx *ctx, EncFrmStatus *frm)
     RK_S32 left = 0;
     RK_S32 right = 0;
     RK_S32 bottom = 0;
-    RK_U32 refresh_idx = frm->seq_idx % cfg->rc.gop;
+    RK_U32 refresh_idx = frm->seq_idx % cfg->rc.refresh_length;
 
     hal_h264e_dbg_func("enter\n");
 

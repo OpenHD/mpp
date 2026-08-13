@@ -327,8 +327,10 @@ static MPP_RET set_frm_refresh_flag(EncFrmStatus *frm, MppEncRefsImpl *p)
         return ret = MPP_ERR_NULL_PTR;
 
     if (p->refresh_length) {
-        frm->is_i_refresh = ((frm->seq_idx  % p->igop) < p->refresh_length) && p->cpb.seq_cnt > 1;
-        frm->is_i_recovery = !(frm->seq_idx  % p->igop)  && p->cpb.seq_cnt > 1;
+        /* Cyclic intra refresh runs independently of the IDR GOP. */
+        frm->is_i_refresh = p->cpb.seq_cnt > 1;
+        frm->is_i_recovery = !(frm->seq_idx % p->refresh_length) &&
+                             p->cpb.seq_cnt > 1;
     } else
         frm->is_i_refresh = 0;
 

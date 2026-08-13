@@ -2204,7 +2204,8 @@ static MPP_RET hal_h264e_vepu510_gen_regs(void *hal, HalEncTask *task)
     setup_vepu510_me(ctx);
 
     if (frm_status->is_i_refresh)
-        setup_vepu510_intra_refresh(regs, ctx, frm_status->seq_idx % cfg->rc.gop);
+        setup_vepu510_intra_refresh(regs, ctx,
+                                    frm_status->seq_idx % cfg->rc.refresh_length);
 
     setup_vepu510_l2(ctx, &cfg->hw);
     setup_vepu510_ext_line_buf(regs, ctx);

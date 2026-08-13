@@ -1365,7 +1365,7 @@ static MPP_RET vepu511_h264_set_one_roi(void *buf, MppEncROIRegion *region, RK_S
     RK_S32 mb_w = MPP_ALIGN(w, 16) / 16;
     RK_S32 mb_h = MPP_ALIGN(h, 16) / 16;
     RK_S32 stride_h = MPP_ALIGN(mb_w, 4);
-    Vepu511RoiH264BsCfg cfg;
+    Vepu511RoiH264BsCfg cfg = { 0 };
     MPP_RET ret = MPP_NOK;
 
     if (NULL == buf || NULL == region) {
@@ -1438,7 +1438,7 @@ static MPP_RET setup_vepu511_intra_refresh(HalVepu511RegSet *regs, HalH264eVepu5
 
     mpp_assert(ctx->roi_base_cfg_buf);
     void *base_cfg_buf = mpp_buffer_get_ptr(ctx->roi_base_cfg_buf);
-    Vepu511RoiH264BsCfg base_cfg;
+    Vepu511RoiH264BsCfg base_cfg = { 0 };
     Vepu511RoiH264BsCfg *base_cfg_ptr = (Vepu511RoiH264BsCfg *)base_cfg_buf;
 
     base_cfg.force_intra = 0;
@@ -1454,7 +1454,32 @@ static MPP_RET setup_vepu511_intra_refresh(HalVepu511RegSet *regs, HalH264eVepu5
         ret = MPP_ERR_MALLOC;
     }
 
-    if (ctx->cfg->rc.refresh_mode == MPP_ENC_RC_INTRA_REFRESH_ROW) {
+    if (ctx->cfg->rc.refresh_mode == MPP_ENC_RC_INTRA_REFRESH_BLOCK) {
+        RK_U32 block = refresh_idx * refresh_num;
+        RK_U32 total = mb_w * mb_h;
+        RK_U32 remaining = block < total ? MPP_MIN(refresh_num, total - block) : 0;
+
+        region->intra = 1;
+        region->quality = -ctx->cfg->rc.qp_delta_ip;
+        region->area_map_en = 1;
+        region->qp_area_idx = 1;
+        region->abs_qp_en = 0;
+
+        while (remaining && block < total) {
+            RK_U32 row_remaining = mb_w - block % mb_w;
+            RK_U32 count = MPP_MIN(remaining, row_remaining);
+
+            region->x = (block % mb_w) * 16;
+            region->y = (block / mb_w) * 16;
+            region->w = count * 16;
+            region->h = 16;
+            vepu511_h264_set_one_roi(base_cfg_buf, region, w, h);
+
+            block += count;
+            remaining -= count;
+        }
+        goto REFRESH_DONE;
+    } else if (ctx->cfg->rc.refresh_mode == MPP_ENC_RC_INTRA_REFRESH_ROW) {
         region->x = 0;
         region->w = w;
         if (refresh_idx > 0) {
@@ -1486,6 +1511,7 @@ static MPP_RET setup_vepu511_intra_refresh(HalVepu511RegSet *regs, HalH264eVepu5
     region->abs_qp_en = 0;
 
     vepu511_h264_set_one_roi(base_cfg_buf, region, w, h);
+REFRESH_DONE:
     mpp_free(region);
 RET:
     hal_h264e_dbg_func("leave, ret %d\n", ret);
@@ -2153,7 +2179,8 @@ static MPP_RET hal_h264e_vepu511_gen_regs(void *hal, HalEncTask *task)
     setup_vepu511_me(ctx);
 
     if (frm->is_i_refresh)
-        setup_vepu511_intra_refresh(regs, ctx, frm->seq_idx % cfg->rc.gop);
+        setup_vepu511_intra_refresh(regs, ctx,
+                                    frm->seq_idx % cfg->rc.refresh_length);
 
     setup_vepu511_l2(ctx);
     setup_vepu511_ext_line_buf(regs, ctx);

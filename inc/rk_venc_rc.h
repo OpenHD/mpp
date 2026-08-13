@@ -71,6 +71,8 @@ typedef enum MppEncRcGopMode_e {
 typedef enum MppEncRcIntraRefreshMode_e {
     MPP_ENC_RC_INTRA_REFRESH_ROW = 0,
     MPP_ENC_RC_INTRA_REFRESH_COL,
+    /* Refresh a raster-ordered number of individual macroblocks per frame. */
+    MPP_ENC_RC_INTRA_REFRESH_BLOCK,
     MPP_ENC_RC_INTRA_REFRESH_BUTT
 } MppEncRcRefreshMode;
 

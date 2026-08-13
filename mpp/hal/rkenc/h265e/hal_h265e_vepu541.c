@@ -1630,7 +1630,8 @@ MPP_RET hal_h265e_v541_gen_regs(void *hal, HalEncTask *task)
     vepu541_h265_set_roi_regs(ctx, regs);
 
     if (frm_status->is_i_refresh)
-        setup_vepu541_intra_refresh(regs, ctx, frm_status->seq_idx % ctx->cfg->rc.gop);
+        setup_vepu541_intra_refresh(regs, ctx,
+                                    frm_status->seq_idx % ctx->cfg->rc.refresh_length);
 
     ctx->frame_num++;
 

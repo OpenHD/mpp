@@ -2790,7 +2790,8 @@ MPP_RET hal_h265e_v580_gen_regs(void *hal, HalEncTask *task)
     /* ROI configure */
     vepu580_h265_set_roi_regs(ctx, reg_base);
     if (frm->is_i_refresh)
-        setup_intra_refresh(ctx, frm->seq_idx % ctx->cfg->rc.gop);
+        setup_intra_refresh(ctx,
+                            frm->seq_idx % ctx->cfg->rc.refresh_length);
 
     if (cfg->tune.deblur_en && (!rc_task->info.complex_scene) &&
         cfg->rc.rc_mode == MPP_ENC_RC_MODE_SMTRC && task->md_info &&

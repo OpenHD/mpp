@@ -1629,7 +1629,8 @@ static MPP_RET hal_h264e_vepu541_gen_regs(void *hal, HalEncTask *task)
     setup_vepu541_me(regs, sps, slice, ctx->is_vepu540);
 
     if (frm_status->is_i_refresh)
-        setup_vepu541_intra_refresh(regs, ctx, frm_status->seq_idx % cfg->rc.gop);
+        setup_vepu541_intra_refresh(regs, ctx,
+                                    frm_status->seq_idx % cfg->rc.refresh_length);
 
     if (ctx->is_vepu540)
         vepu540_set_osd(&ctx->osd_cfg);

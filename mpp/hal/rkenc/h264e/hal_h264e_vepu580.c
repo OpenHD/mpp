@@ -2160,7 +2160,8 @@ static MPP_RET hal_h264e_vepu580_gen_regs(void *hal, HalEncTask *task)
     setup_vepu580_me(regs, sps, slice);
 
     if (frm_status->is_i_refresh)
-        setup_vepu580_intra_refresh(regs, ctx, frm_status->seq_idx % cfg->rc.gop);
+        setup_vepu580_intra_refresh(regs, ctx,
+                                    frm_status->seq_idx % cfg->rc.refresh_length);
 
     if (cfg->tune.deblur_en && (!rc_task->info.complex_scene) &&
         cfg->rc.rc_mode == MPP_ENC_RC_MODE_SMTRC &&
