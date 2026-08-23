@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 cd $1
+mkdir -p mpp
 rm -rf mpp/lib'$2$'.a
 
 SCRIPT=$'CREATE mpp/lib'$2$'.a\n'
